@@ -55,11 +55,11 @@ modules/
 
 Responsibilities:
 
-- `SqlUtility.ps1`: WinForms controls, staged-view navigation, busy-state coordination, and user interaction.
+- `SqlUtility.ps1`: WinForms controls, staged-view navigation, busy-state coordination, user interaction, result-page binding, paging/status rendering, and the 200-pixel grid-width cap.
 - `SqlUtility.Config.ps1`: configuration defaults, schema validation, JSON loading/writing, saved-connection uniqueness, deletion, and settings validation.
 - `SqlUtility.QueryPolicy.ps1`: SQL tokenization, version 1 read-only policy enforcement, table-source validation, and top-level `ORDER BY` detection.
-- `SqlUtility.Database.ps1`: connection-string construction, diagnostic connection tests, unordered probing, ordered page retrieval, command timeout enforcement, and deterministic disposal.
-- `SqlUtility.Excel.ps1`: dependency-free streaming `.xlsx` package generation and export-limit enforcement.
+- `SqlUtility.Database.ps1`: connection-string construction, diagnostic connection tests, unordered probing, ordered page retrieval, conversion of `SqlDataReader` schema/rows into neutral result objects, callback-based ordered-export row streaming, command timeout enforcement, and deterministic ownership/disposal of SQL resources.
+- `SqlUtility.Excel.ps1`: dependency-free streaming `.xlsx` package generation from neutral schema/row input and export-limit enforcement; it never creates or owns SQL connections, commands, or readers.
 
 The POC filenames are replaced by these production names. The proven POC remains recoverable from Git history rather than remaining as a second runnable application in the distribution folder.
 
@@ -194,6 +194,14 @@ The isolated policy design permits later versions to add explicit `INNER JOIN` a
 ## Query Execution and Paging
 
 All commands use the active server/database, Windows integrated security, the configured command timeout, and deterministic disposal. Query errors and timeouts leave the last successful result cleared and display a user-facing error.
+
+### Result Data Boundary
+
+`SqlUtility.Database.ps1` parses database results but does not render them. Interactive execution returns a neutral page-result object containing a `DataTable` plus page metadata: page number, displayed-row count, previous/next availability, completeness, and truncation state. For unordered queries, the database module also returns the bounded complete-or-truncated in-memory result used for local paging.
+
+`SqlUtility.ps1` owns presentation. It binds the returned `DataTable` to the read-only `DataGridView`, updates page controls and status text from the metadata, and recalculates displayed column widths after each bind. No WinForms control is passed into the database module.
+
+For complete ordered export, `SqlUtility.Database.ps1` owns the fresh connection, command, and reader and exposes schema and rows through a callback-based streaming boundary. `SqlUtility.Excel.ps1` consumes that neutral stream and writes workbook cells without directly opening or disposing database resources. Complete unordered export passes the cached schema and rows directly to the Excel module.
 
 ### Ordered Queries
 

@@ -58,6 +58,7 @@ function Get-SqlUtilitySqlTokens {
         }
 
         if ($character -eq "'") {
+            $start = $index
             $index++
             $closed = $false
             while ($index -lt $length) {
@@ -75,6 +76,16 @@ function Get-SqlUtilitySqlTokens {
             if (-not $closed) {
                 throw [System.ArgumentException]::new('The SQL contains an unclosed string literal.')
             }
+
+            $text = $Sql.Substring($start, $index - $start)
+            [void] $tokens.Add([pscustomobject]@{
+                Text = $text
+                Upper = $text.ToUpperInvariant()
+                Kind = 'Symbol'
+                Depth = $depth
+                Start = $start
+                End = $index
+            })
             continue
         }
 
@@ -225,6 +236,246 @@ function Test-SqlUtilityIdentifierToken {
     return $Token.Text -match '^[\p{L}_][\p{L}\p{Nd}_@$]*$'
 }
 
+function Test-SqlUtilityScalarExpression {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [bool] $AllowAlias = $false,
+        [bool] $AllowOrdering = $false
+    )
+
+    if ($Start -ge $End) {
+        return $false
+    }
+
+    $expectOperand = $true
+    $operatorContinuation = $false
+    $caseDepth = 0
+    $index = $Start
+    $operatorSymbols = @('+', '-', '*', '/', '%', '=', '<', '>', '!', '~', '&', '|', '^')
+    $binaryWordOperators = @('AND', 'OR', 'LIKE', 'IN', 'IS', 'BETWEEN', 'COLLATE', 'OVER')
+
+    while ($index -lt $End) {
+        $token = $Tokens[$index]
+
+        if ($token.Depth -gt 0) {
+            $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and $token.Text -eq '(') {
+            $closeIndex = $index + 1
+            while ($closeIndex -lt $End) {
+                if ($Tokens[$closeIndex].Depth -eq 0 -and $Tokens[$closeIndex].Kind -eq 'Symbol' -and $Tokens[$closeIndex].Text -eq ')') {
+                    break
+                }
+                $closeIndex++
+            }
+            if ($closeIndex -ge $End) {
+                return $false
+            }
+            if ($expectOperand -and $closeIndex -eq ($index + 1)) {
+                return $false
+            }
+
+            $expectOperand = $false
+            $operatorContinuation = $false
+            $index = $closeIndex + 1
+            continue
+        }
+
+        if ($token.Kind -eq 'Identifier' -or $token.Kind -eq 'Word') {
+            if ($token.Kind -eq 'Word') {
+                if ($token.Upper -eq 'CASE') {
+                    if (-not $expectOperand) {
+                        return $false
+                    }
+                    $caseDepth++
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'WHEN') {
+                    if ($caseDepth -eq 0) {
+                        return $false
+                    }
+                    $expectOperand = $true
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'THEN' -or $token.Upper -eq 'ELSE') {
+                    if ($caseDepth -eq 0 -or $expectOperand) {
+                        return $false
+                    }
+                    $expectOperand = $true
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'END') {
+                    if ($caseDepth -eq 0 -or $expectOperand) {
+                        return $false
+                    }
+                    $caseDepth--
+                    $expectOperand = $false
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'NOT') {
+                    if (-not $expectOperand) {
+                        if (
+                            ($index + 1) -ge $End -or
+                            $Tokens[$index + 1].Kind -ne 'Word' -or
+                            @('LIKE', 'IN', 'BETWEEN') -notcontains $Tokens[$index + 1].Upper
+                        ) {
+                            return $false
+                        }
+                        $expectOperand = $true
+                        $operatorContinuation = $false
+                        $index += 2
+                        continue
+                    }
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($binaryWordOperators -contains $token.Upper) {
+                    if ($expectOperand) {
+                        return $false
+                    }
+                    $expectOperand = $true
+                    $operatorContinuation = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'ASC' -or $token.Upper -eq 'DESC') {
+                    if (-not $AllowOrdering -or $expectOperand -or $index -ne ($End - 1)) {
+                        return $false
+                    }
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'AS') {
+                    if (-not $AllowAlias -or $expectOperand -or $caseDepth -ne 0 -or ($index + 2) -ne $End) {
+                        return $false
+                    }
+                    if (-not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index + 1])) {
+                        return $false
+                    }
+                    return $true
+                }
+            }
+
+            if (-not $expectOperand) {
+                return $false
+            }
+            $expectOperand = $false
+            $operatorContinuation = $false
+            $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and $token.Text.StartsWith("'")) {
+            if (-not $expectOperand) {
+                return $false
+            }
+            $expectOperand = $false
+            $operatorContinuation = $false
+            $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and $token.Text -eq '.') {
+            if ($expectOperand -or ($index + 1) -ge $End) {
+                return $false
+            }
+
+            $previousToken = $Tokens[$index - 1]
+            $nextToken = $Tokens[$index + 1]
+            if (
+                $previousToken.Kind -eq 'Word' -and $previousToken.Text -match '^\d+$' -and
+                $nextToken.Kind -eq 'Word' -and $nextToken.Text -match '^\d+$'
+            ) {
+                $expectOperand = $false
+                $operatorContinuation = $false
+                $index += 2
+                continue
+            }
+            if (
+                -not (Test-SqlUtilityIdentifierToken -Token $nextToken) -and
+                -not ($nextToken.Kind -eq 'Symbol' -and $nextToken.Text -eq '*')
+            ) {
+                return $false
+            }
+            $expectOperand = $true
+            $operatorContinuation = $false
+            $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and $operatorSymbols -contains $token.Text) {
+            if ($expectOperand) {
+                if ($token.Text -eq '*') {
+                    $expectOperand = $false
+                    $operatorContinuation = $false
+                }
+                elseif ($token.Text -eq '+' -or $token.Text -eq '-' -or $token.Text -eq '~' -or $operatorContinuation) {
+                    $operatorContinuation = $true
+                }
+                else {
+                    return $false
+                }
+            }
+            else {
+                $expectOperand = $true
+                $operatorContinuation = $true
+            }
+            $index++
+            continue
+        }
+
+        return $false
+    }
+
+    return (-not $expectOperand) -and $caseDepth -eq 0
+}
+
+function Test-SqlUtilityExpressionList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [bool] $AllowComma = $false,
+        [bool] $AllowAlias = $false,
+        [bool] $AllowOrdering = $false
+    )
+
+    if ($Start -ge $End) {
+        return $false
+    }
+
+    $itemStart = $Start
+    for ($index = $Start; $index -lt $End; $index++) {
+        $token = $Tokens[$index]
+        if ($token.Depth -eq 0 -and $token.Kind -eq 'Symbol' -and $token.Text -eq ',') {
+            if (-not $AllowComma) {
+                return $false
+            }
+            if (-not (Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $index -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering)) {
+                return $false
+            }
+            $itemStart = $index + 1
+        }
+    }
+
+    return Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $End -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering
+}
+
 function Test-SqlUtilityQuery {
     [CmdletBinding()]
     param(
@@ -289,45 +540,6 @@ function Test-SqlUtilityQuery {
         }
     }
 
-    $topLevelStatementStarters = @(
-        'ADD','BREAK','CHECKPOINT','CLOSE','CONTINUE','DEALLOCATE','DISABLE',
-        'DISK','DUMP','ENABLE','GOTO','IF','KILL','LOAD','OPEN','PRINT',
-        'RAISERROR','READTEXT','RECEIVE','RECONFIGURE','RENAME','RETURN','REVERT','SAVE',
-        'SEND','SETUSER','SHUTDOWN','THROW','UPDATETEXT','WAITFOR','WHILE',
-        'WRITETEXT'
-    )
-    for ($tokenIndex = 1; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
-        $token = $tokens[$tokenIndex]
-        if ($token.Kind -eq 'Word' -and $token.Depth -eq 0 -and $topLevelStatementStarters -contains $token.Upper) {
-            return New-SqlUtilityInvalidQueryResult -Message "'$($token.Text)' cannot start another statement."
-        }
-    }
-
-    $compoundStatementStarters = @(
-        [pscustomobject]@{ Words = @('END', 'CONVERSATION'); Text = 'END CONVERSATION' },
-        [pscustomobject]@{ Words = @('MOVE', 'CONVERSATION'); Text = 'MOVE CONVERSATION' },
-        [pscustomobject]@{ Words = @('GET', 'CONVERSATION', 'GROUP'); Text = 'GET CONVERSATION GROUP' }
-    )
-    for ($tokenIndex = 1; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
-        foreach ($starter in $compoundStatementStarters) {
-            if (($tokenIndex + $starter.Words.Count) -gt $tokens.Count) {
-                continue
-            }
-
-            $matches = $true
-            for ($wordIndex = 0; $wordIndex -lt $starter.Words.Count; $wordIndex++) {
-                $candidate = $tokens[$tokenIndex + $wordIndex]
-                if ($candidate.Kind -ne 'Word' -or $candidate.Depth -ne 0 -or $candidate.Upper -ne $starter.Words[$wordIndex]) {
-                    $matches = $false
-                    break
-                }
-            }
-            if ($matches) {
-                return New-SqlUtilityInvalidQueryResult -Message "'$($starter.Text)' cannot start another statement."
-            }
-        }
-    }
-
     $fromIndexes = @()
     for ($tokenIndex = 0; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
         $token = $tokens[$tokenIndex]
@@ -337,6 +549,19 @@ function Test-SqlUtilityQuery {
     }
     if ($fromIndexes.Count -ne 1) {
         return New-SqlUtilityInvalidQueryResult -Message 'The query must contain exactly one FROM clause.'
+    }
+
+    $selectExpressionStart = 1
+    if (
+        $selectExpressionStart -lt $fromIndexes[0] -and
+        $tokens[$selectExpressionStart].Kind -eq 'Word' -and
+        $tokens[$selectExpressionStart].Depth -eq 0 -and
+        ($tokens[$selectExpressionStart].Upper -eq 'DISTINCT' -or $tokens[$selectExpressionStart].Upper -eq 'ALL')
+    ) {
+        $selectExpressionStart++
+    }
+    if (-not (Test-SqlUtilityExpressionList -Tokens $tokens -Start $selectExpressionStart -End $fromIndexes[0] -AllowComma $true -AllowAlias $true)) {
+        return New-SqlUtilityInvalidQueryResult -Message 'The SELECT list contains an invalid expression.'
     }
 
     $hasOrderBy = $false
@@ -411,6 +636,65 @@ function Test-SqlUtilityQuery {
         )
         if (-not $atClauseBoundary) {
             return New-SqlUtilityInvalidQueryResult -Message 'Only one table and one optional alias are allowed after FROM.'
+        }
+    }
+
+    $clauses = New-Object System.Collections.Generic.List[object]
+    for ($tokenIndex = $sourceIndex; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
+        $token = $tokens[$tokenIndex]
+        if ($token.Depth -ne 0 -or $token.Kind -ne 'Word') {
+            continue
+        }
+
+        $clauseName = $null
+        $rank = 0
+        $contentStart = $tokenIndex + 1
+        if ($token.Upper -eq 'WHERE') {
+            $clauseName = 'WHERE'
+            $rank = 1
+        }
+        elseif ($token.Upper -eq 'GROUP') {
+            $clauseName = 'GROUP BY'
+            $rank = 2
+            $contentStart++
+        }
+        elseif ($token.Upper -eq 'HAVING') {
+            $clauseName = 'HAVING'
+            $rank = 3
+        }
+        elseif ($token.Upper -eq 'ORDER') {
+            $clauseName = 'ORDER BY'
+            $rank = 4
+            $contentStart++
+        }
+
+        if ($null -ne $clauseName) {
+            [void] $clauses.Add([pscustomobject]@{
+                Name = $clauseName
+                Rank = $rank
+                Start = $tokenIndex
+                ContentStart = $contentStart
+            })
+        }
+    }
+
+    if ($sourceIndex -lt $tokens.Count -and ($clauses.Count -eq 0 -or $clauses[0].Start -ne $sourceIndex)) {
+        return New-SqlUtilityInvalidQueryResult -Message 'Unexpected tokens follow the table source.'
+    }
+
+    $previousRank = 0
+    for ($clauseIndex = 0; $clauseIndex -lt $clauses.Count; $clauseIndex++) {
+        $clause = $clauses[$clauseIndex]
+        if ($clause.Rank -le $previousRank) {
+            return New-SqlUtilityInvalidQueryResult -Message 'Query clauses must appear once and in WHERE, GROUP BY, HAVING, ORDER BY order.'
+        }
+        $previousRank = $clause.Rank
+
+        $contentEnd = if (($clauseIndex + 1) -lt $clauses.Count) { $clauses[$clauseIndex + 1].Start } else { $tokens.Count }
+        $allowComma = $clause.Name -eq 'GROUP BY' -or $clause.Name -eq 'ORDER BY'
+        $allowOrdering = $clause.Name -eq 'ORDER BY'
+        if (-not (Test-SqlUtilityExpressionList -Tokens $tokens -Start $clause.ContentStart -End $contentEnd -AllowComma $allowComma -AllowOrdering $allowOrdering)) {
+            return New-SqlUtilityInvalidQueryResult -Message "The $($clause.Name) clause contains an invalid expression or trailing statement."
         }
     }
 

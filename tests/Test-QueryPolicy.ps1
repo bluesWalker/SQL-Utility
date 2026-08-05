@@ -16,6 +16,8 @@ $accepted = @(
     @{ Name = 'reserved words in quoted identifiers'; Sql = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]'; Table = '[dbo].[UNION]'; Ordered = $false; Normalized = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]' },
     @{ Name = 'parenthesized scalar expressions'; Sql = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)' },
     @{ Name = 'nested order by does not order result'; Sql = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' },
+    @{ Name = 'compound scalar expression'; Sql = "SELECT CASE WHEN i.Score >= 10 AND i.Name IS NOT NULL THEN COALESCE(i.Score, 0) ELSE -1 END AS Score FROM dbo.Items AS i WHERE i.Id <> 0 AND (i.Enabled = 1 OR i.Name LIKE 'A%') ORDER BY i.Id DESC"; Table = 'dbo.Items'; Ordered = $true; Normalized = "SELECT CASE WHEN i.Score >= 10 AND i.Name IS NOT NULL THEN COALESCE(i.Score, 0) ELSE -1 END AS Score FROM dbo.Items AS i WHERE i.Id <> 0 AND (i.Enabled = 1 OR i.Name LIKE 'A%') ORDER BY i.Id DESC" },
+    @{ Name = 'qualified wildcard decimal and negated operators'; Sql = "SELECT i.*, i.Price * 1.25 AS AdjustedPrice FROM dbo.Items AS i WHERE i.Id NOT IN (1, 2) AND i.Name NOT LIKE 'X%' ORDER BY i.Price DESC"; Table = 'dbo.Items'; Ordered = $true; Normalized = "SELECT i.*, i.Price * 1.25 AS AdjustedPrice FROM dbo.Items AS i WHERE i.Id NOT IN (1, 2) AND i.Name NOT LIKE 'X%' ORDER BY i.Price DESC" },
     @{ Name = 'statement starters in non-executable text'; Sql = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */" },
     @{ Name = 'final semicolon before line comment'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id; -- trailing comment'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT Id FROM dbo.Items ORDER BY Id -- trailing comment' },
     @{ Name = 'final semicolon before block comment'; Sql = "SELECT Id FROM dbo.Items ;`r`n/* trailing comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT Id FROM dbo.Items `r`n/* trailing comment ; */  " },
@@ -132,6 +134,20 @@ $rejected += @(
     @{ Name = 'semicolonless END CONVERSATION batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nEND CONVERSATION @handle" },
     @{ Name = 'semicolonless MOVE CONVERSATION batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nMOVE CONVERSATION @handle TO @group" },
     @{ Name = 'semicolonless GET CONVERSATION GROUP batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nGET CONVERSATION GROUP @group FROM dbo.Queue" }
+)
+
+$rejected += @(
+    @{ Name = 'arbitrary trailing words after WHERE'; Sql = "SELECT * FROM dbo.Items WHERE Id = 1`r`nFROBNICATE target" },
+    @{ Name = 'arbitrary trailing number after WHERE'; Sql = "SELECT * FROM dbo.Items WHERE Id = 1`r`n987654" },
+    @{ Name = 'arbitrary trailing words after GROUP BY'; Sql = "SELECT [Type] FROM dbo.Items GROUP BY [Type]`r`nMYSTERY target" },
+    @{ Name = 'arbitrary trailing words after HAVING'; Sql = "SELECT [Type] FROM dbo.Items GROUP BY [Type] HAVING COUNT(*) > 1`r`nXYZZY target" },
+    @{ Name = 'arbitrary trailing words after ORDER BY'; Sql = "SELECT Id FROM dbo.Items ORDER BY Id`r`nWARP target" },
+    @{ Name = 'out-of-order WHERE clause'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id WHERE Enabled = 1' },
+    @{ Name = 'repeated WHERE clause'; Sql = 'SELECT Id FROM dbo.Items WHERE Enabled = 1 WHERE Id > 0' },
+    @{ Name = 'empty WHERE expression'; Sql = 'SELECT Id FROM dbo.Items WHERE' },
+    @{ Name = 'empty GROUP BY expression'; Sql = 'SELECT Id FROM dbo.Items GROUP BY' },
+    @{ Name = 'empty HAVING expression'; Sql = 'SELECT Id FROM dbo.Items GROUP BY Id HAVING' },
+    @{ Name = 'empty ORDER BY expression'; Sql = 'SELECT Id FROM dbo.Items ORDER BY' }
 )
 
 foreach ($case in $rejected) {

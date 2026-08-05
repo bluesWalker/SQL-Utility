@@ -19,6 +19,26 @@ function Assert-PageResultShape($Result, [string] $Message) {
     Assert-Equal $expected $actual "$Message exposes the neutral page-result contract"
 }
 
+$duplicateSchema = New-SqlUtilityResultTable -Columns @(
+    [pscustomobject]@{ Name = 'Column 5'; DataType = [bool]; Ordinal = 6 },
+    [pscustomobject]@{ Name = 'ID'; DataType = [string]; Ordinal = 2 },
+    [pscustomobject]@{ Name = 'Id'; DataType = [int]; Ordinal = 0 },
+    [pscustomobject]@{ Name = '   '; DataType = [guid]; Ordinal = 5 },
+    [pscustomobject]@{ Name = 'Id (2)'; DataType = [decimal]; Ordinal = 3 },
+    [pscustomobject]@{ Name = 'id'; DataType = [long]; Ordinal = 1 },
+    [pscustomobject]@{ Name = ''; DataType = [datetime]; Ordinal = 4 }
+)
+Assert-Equal 'Id,Id (2),Id (3),Id (2) (2),Column 5,Column 6,Column 5 (2)' `
+    (@($duplicateSchema.Columns.ColumnName) -join ',') `
+    'Result schema makes duplicate, pre-suffixed, and blank names unique in reader ordinal order'
+$expectedDuplicateTypes = @([int], [long], [string], [decimal], [datetime], [guid], [bool])
+for ($ordinal = 0; $ordinal -lt $expectedDuplicateTypes.Count; $ordinal++) {
+    Assert-Equal $ordinal $duplicateSchema.Columns[$ordinal].Ordinal "Result schema preserves column ordinal $ordinal"
+    Assert-Equal $expectedDuplicateTypes[$ordinal] $duplicateSchema.Columns[$ordinal].DataType `
+        "Result schema preserves CLR type at ordinal $ordinal"
+}
+Assert-Equal 0 $duplicateSchema.Rows.Count 'Result schema parser does not add data rows'
+
 $connectionString = New-SqlUtilityConnectionString -Server '  server.example  ' -Database '  UtilityDb  '
 $connectionBuilder = [System.Data.SqlClient.SqlConnectionStringBuilder]::new($connectionString)
 Assert-Equal 'server.example' $connectionBuilder.DataSource 'Connection string trims the server'

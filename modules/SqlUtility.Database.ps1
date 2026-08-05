@@ -14,6 +14,42 @@ function New-SqlUtilityConnectionString {
     return $builder.ConnectionString
 }
 
+function New-SqlUtilityResultTable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Columns
+    )
+
+    $table = [System.Data.DataTable]::new('Results')
+    $usedNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $canonicalNames = [System.Collections.Generic.Dictionary[string,string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($column in @($Columns | Sort-Object -Property Ordinal)) {
+        $baseName = [string] $column.Name
+        if ([string]::IsNullOrWhiteSpace($baseName)) {
+            $baseName = 'Column ' + ([int] $column.Ordinal + 1)
+        }
+
+        if ($canonicalNames.ContainsKey($baseName)) {
+            $baseName = $canonicalNames[$baseName]
+        }
+        else {
+            $canonicalNames.Add($baseName, $baseName)
+        }
+
+        $columnName = $baseName
+        $suffix = 2
+        while (-not $usedNames.Add($columnName)) {
+            $columnName = "$baseName ($suffix)"
+            $suffix++
+        }
+
+        [void] $table.Columns.Add($columnName, [type] $column.DataType)
+    }
+
+    return (, $table)
+}
+
 function New-SqlUtilityPageResult {
     [CmdletBinding()]
     param(
@@ -82,21 +118,28 @@ function Invoke-SqlUtilityTableExecutor {
             $reader = $null
             try {
                 $reader = $command.ExecuteReader()
-                $table = [System.Data.DataTable]::new('Results')
                 $schemaTable = $reader.GetSchemaTable()
-                for ($ordinal = 0; $ordinal -lt $reader.FieldCount; $ordinal++) {
-                    $columnName = $reader.GetName($ordinal)
-                    $columnType = $reader.GetFieldType($ordinal)
-                    if ($null -ne $schemaTable -and $ordinal -lt $schemaTable.Rows.Count) {
-                        if ($null -ne $schemaTable.Rows[$ordinal].ColumnName) {
-                            $columnName = [string] $schemaTable.Rows[$ordinal].ColumnName
+                $columns = @(
+                    for ($ordinal = 0; $ordinal -lt $reader.FieldCount; $ordinal++) {
+                        $columnName = $reader.GetName($ordinal)
+                        $columnType = $reader.GetFieldType($ordinal)
+                        if ($null -ne $schemaTable -and $ordinal -lt $schemaTable.Rows.Count) {
+                            if ($null -ne $schemaTable.Rows[$ordinal].ColumnName) {
+                                $columnName = [string] $schemaTable.Rows[$ordinal].ColumnName
+                            }
+                            if ($schemaTable.Rows[$ordinal].DataType -is [type]) {
+                                $columnType = [type] $schemaTable.Rows[$ordinal].DataType
+                            }
                         }
-                        if ($schemaTable.Rows[$ordinal].DataType -is [type]) {
-                            $columnType = [type] $schemaTable.Rows[$ordinal].DataType
+
+                        [pscustomobject]@{
+                            Name = $columnName
+                            DataType = $columnType
+                            Ordinal = $ordinal
                         }
                     }
-                    [void] $table.Columns.Add($columnName, $columnType)
-                }
+                )
+                $table = New-SqlUtilityResultTable -Columns $columns
 
                 $rowCount = 0
                 while ($rowCount -lt $MaximumRows -and $reader.Read()) {

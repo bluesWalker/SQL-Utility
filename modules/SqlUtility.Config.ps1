@@ -139,11 +139,13 @@ function Read-SqlUtilityConfig {
         [Parameter(Mandatory = $true)][string] $Path
     )
 
-    if (-not [System.IO.File]::Exists($Path)) {
+    try {
+        $inputObject = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
         return New-SqlUtilityDefaultConfig
     }
 
-    $inputObject = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     return ConvertTo-SqlUtilityValidatedConfig -InputObject $inputObject
 }
 

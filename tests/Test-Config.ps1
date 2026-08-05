@@ -19,6 +19,9 @@ try {
     Assert-Equal 1000 $missing.unorderedRowLimit 'Missing config uses defaults'
     Assert-True (-not (Test-Path -LiteralPath $missingPath)) 'Read does not create config'
 
+    $invalidPath = Join-Path $testRoot 'invalid|config.json'
+    Assert-Throws { Read-SqlUtilityConfig -Path $invalidPath } 'System.ArgumentException' 'Invalid config path is not treated as missing'
+
     $withPair = Add-SqlUtilitySavedConnection -Config $defaults -Server ' ServerA ' -Database ' DbA '
     $deduplicated = Add-SqlUtilitySavedConnection -Config $withPair -Server 'servera' -Database 'dba'
     Assert-Equal 1 @($deduplicated.connections).Count 'Connection pair is unique case-insensitively'
@@ -31,6 +34,14 @@ try {
     $saved = Write-SqlUtilityConfig -Path $roundTripPath -Config $deduplicated
     $loaded = Read-SqlUtilityConfig -Path $roundTripPath
     Assert-Equal ($saved | ConvertTo-Json -Depth 4) ($loaded | ConvertTo-Json -Depth 4) 'Config round-trips'
+
+    $readLock = [System.IO.File]::Open($roundTripPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        Assert-Throws { Read-SqlUtilityConfig -Path $roundTripPath } $null 'Locked configuration read propagates its I/O error'
+    }
+    finally {
+        $readLock.Dispose()
+    }
 
     foreach ($validLimit in @(100, 2000)) {
         $candidate = New-SqlUtilityDefaultConfig
@@ -69,6 +80,27 @@ try {
         queryExportTimeoutSeconds = 120
     }
     Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingPropertyConfig } 'System.ArgumentException' 'Reject config missing connections'
+
+    $missingSchemaVersionConfig = [pscustomobject]@{
+        unorderedRowLimit = 1000
+        queryExportTimeoutSeconds = 120
+        connections = @()
+    }
+    Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingSchemaVersionConfig } 'System.ArgumentException' 'Reject config missing schemaVersion'
+
+    $missingLimitConfig = [pscustomobject]@{
+        schemaVersion = 1
+        queryExportTimeoutSeconds = 120
+        connections = @()
+    }
+    Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingLimitConfig } 'System.ArgumentException' 'Reject config missing unorderedRowLimit'
+
+    $missingTimeoutConfig = [pscustomobject]@{
+        schemaVersion = 1
+        unorderedRowLimit = 1000
+        connections = @()
+    }
+    Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingTimeoutConfig } 'System.ArgumentException' 'Reject config missing queryExportTimeoutSeconds'
 
     $futureSchemaConfig = New-SqlUtilityDefaultConfig
     $futureSchemaConfig.schemaVersion = 2

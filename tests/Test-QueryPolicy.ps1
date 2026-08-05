@@ -16,6 +16,7 @@ $accepted = @(
     @{ Name = 'reserved words in quoted identifiers'; Sql = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]'; Table = '[dbo].[UNION]'; Ordered = $false; Normalized = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]' },
     @{ Name = 'parenthesized scalar expressions'; Sql = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)' },
     @{ Name = 'nested order by does not order result'; Sql = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' },
+    @{ Name = 'statement starters in non-executable text'; Sql = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */" },
     @{ Name = 'final semicolon before line comment'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id; -- trailing comment'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT Id FROM dbo.Items ORDER BY Id -- trailing comment' },
     @{ Name = 'final semicolon before block comment'; Sql = "SELECT Id FROM dbo.Items ;`r`n/* trailing comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT Id FROM dbo.Items `r`n/* trailing comment ; */  " },
     @{ Name = 'escaped delimiters'; Sql = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]'; Table = '[dbo].[Items]'; Ordered = $false; Normalized = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]' }
@@ -93,6 +94,44 @@ $rejected = @(
     @{ Name = 'extra table source token'; Sql = 'SELECT * FROM dbo.Items i extra' },
     @{ Name = 'GROUP without BY'; Sql = 'SELECT Id FROM dbo.Items GROUP Id' },
     @{ Name = 'ORDER without BY'; Sql = 'SELECT Id FROM dbo.Items ORDER Id' }
+)
+
+$rejected += @(
+    @{ Name = 'semicolonless WAITFOR batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nWAITFOR DELAY '00:00:01'" },
+    @{ Name = 'semicolonless KILL batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nKILL 51" },
+    @{ Name = 'semicolonless SHUTDOWN batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nSHUTDOWN" },
+    @{ Name = 'semicolonless RECONFIGURE batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nRECONFIGURE" },
+    @{ Name = 'semicolonless CHECKPOINT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nCHECKPOINT" },
+    @{ Name = 'semicolonless PRINT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nPRINT 'message'" },
+    @{ Name = 'semicolonless RAISERROR batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nRAISERROR ('message', 16, 1)" },
+    @{ Name = 'semicolonless THROW batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nTHROW 50000, 'message', 1" },
+    @{ Name = 'semicolonless RETURN batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nRETURN" },
+    @{ Name = 'semicolonless GOTO batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nGOTO target_label" },
+    @{ Name = 'semicolonless BREAK batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nBREAK" },
+    @{ Name = 'semicolonless CONTINUE batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nCONTINUE" },
+    @{ Name = 'semicolonless IF batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nIF 1 = 1 PRINT 'message'" },
+    @{ Name = 'semicolonless WHILE batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nWHILE 1 = 0 PRINT 'message'" },
+    @{ Name = 'semicolonless CLOSE cursor batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nCLOSE item_cursor" },
+    @{ Name = 'semicolonless DEALLOCATE cursor batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nDEALLOCATE item_cursor" },
+    @{ Name = 'semicolonless OPEN cursor batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nOPEN item_cursor" },
+    @{ Name = 'semicolonless SAVE transaction batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nSAVE TRANSACTION SavePoint1" },
+    @{ Name = 'semicolonless REVERT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nREVERT" },
+    @{ Name = 'semicolonless READTEXT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nREADTEXT dbo.Items.Payload @pointer 0 1" },
+    @{ Name = 'semicolonless UPDATETEXT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nUPDATETEXT dbo.Items.Payload @pointer 0 1 'x'" },
+    @{ Name = 'semicolonless WRITETEXT batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nWRITETEXT dbo.Items.Payload @pointer 'x'" },
+    @{ Name = 'semicolonless RECEIVE batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nRECEIVE * FROM dbo.Queue" },
+    @{ Name = 'semicolonless SEND batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nSEND ON CONVERSATION @handle MESSAGE TYPE [type] ('x')" },
+    @{ Name = 'semicolonless SETUSER batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nSETUSER 'dbo'" },
+    @{ Name = 'semicolonless DUMP batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nDUMP DATABASE UtilityDb TO DISK = 'utility.bak'" },
+    @{ Name = 'semicolonless LOAD batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nLOAD DATABASE UtilityDb FROM DISK = 'utility.bak'" },
+    @{ Name = 'semicolonless DISK batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nDISK INIT NAME = 'utility', PHYSNAME = 'utility.dat', VDEVNO = 1, SIZE = 2" },
+    @{ Name = 'semicolonless ADD SIGNATURE batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nADD SIGNATURE TO dbo.ProcedureName BY CERTIFICATE SigningCertificate" },
+    @{ Name = 'semicolonless DISABLE TRIGGER batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nDISABLE TRIGGER dbo.TriggerName ON dbo.Items" },
+    @{ Name = 'semicolonless ENABLE TRIGGER batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nENABLE TRIGGER dbo.TriggerName ON dbo.Items" },
+    @{ Name = 'semicolonless RENAME batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nRENAME OBJECT dbo.Items TO ArchivedItems" },
+    @{ Name = 'semicolonless END CONVERSATION batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nEND CONVERSATION @handle" },
+    @{ Name = 'semicolonless MOVE CONVERSATION batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nMOVE CONVERSATION @handle TO @group" },
+    @{ Name = 'semicolonless GET CONVERSATION GROUP batch'; Sql = "SELECT * FROM dbo.Items WHERE 1 = 1`r`nGET CONVERSATION GROUP @group FROM dbo.Queue" }
 )
 
 foreach ($case in $rejected) {

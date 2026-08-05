@@ -289,6 +289,45 @@ function Test-SqlUtilityQuery {
         }
     }
 
+    $topLevelStatementStarters = @(
+        'ADD','BREAK','CHECKPOINT','CLOSE','CONTINUE','DEALLOCATE','DISABLE',
+        'DISK','DUMP','ENABLE','GOTO','IF','KILL','LOAD','OPEN','PRINT',
+        'RAISERROR','READTEXT','RECEIVE','RECONFIGURE','RENAME','RETURN','REVERT','SAVE',
+        'SEND','SETUSER','SHUTDOWN','THROW','UPDATETEXT','WAITFOR','WHILE',
+        'WRITETEXT'
+    )
+    for ($tokenIndex = 1; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
+        $token = $tokens[$tokenIndex]
+        if ($token.Kind -eq 'Word' -and $token.Depth -eq 0 -and $topLevelStatementStarters -contains $token.Upper) {
+            return New-SqlUtilityInvalidQueryResult -Message "'$($token.Text)' cannot start another statement."
+        }
+    }
+
+    $compoundStatementStarters = @(
+        [pscustomobject]@{ Words = @('END', 'CONVERSATION'); Text = 'END CONVERSATION' },
+        [pscustomobject]@{ Words = @('MOVE', 'CONVERSATION'); Text = 'MOVE CONVERSATION' },
+        [pscustomobject]@{ Words = @('GET', 'CONVERSATION', 'GROUP'); Text = 'GET CONVERSATION GROUP' }
+    )
+    for ($tokenIndex = 1; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
+        foreach ($starter in $compoundStatementStarters) {
+            if (($tokenIndex + $starter.Words.Count) -gt $tokens.Count) {
+                continue
+            }
+
+            $matches = $true
+            for ($wordIndex = 0; $wordIndex -lt $starter.Words.Count; $wordIndex++) {
+                $candidate = $tokens[$tokenIndex + $wordIndex]
+                if ($candidate.Kind -ne 'Word' -or $candidate.Depth -ne 0 -or $candidate.Upper -ne $starter.Words[$wordIndex]) {
+                    $matches = $false
+                    break
+                }
+            }
+            if ($matches) {
+                return New-SqlUtilityInvalidQueryResult -Message "'$($starter.Text)' cannot start another statement."
+            }
+        }
+    }
+
     $fromIndexes = @()
     for ($tokenIndex = 0; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
         $token = $tokens[$tokenIndex]

@@ -359,7 +359,7 @@ function Export-SqlUtilityXlsx {
         [Parameter(Mandatory = $true)][string] $DestinationPath,
         [Parameter(Mandatory = $true)][scriptblock] $RowSource,
         [Parameter(Mandatory = $true)][int] $TimeoutSeconds,
-        [int] $MaximumDataRows = 1048575
+        [ValidateRange(0, 1048575)][int] $MaximumDataRows = 1048575
     )
 
     $destinationFullPath = [System.IO.Path]::GetFullPath($DestinationPath)
@@ -370,6 +370,8 @@ function Export-SqlUtilityXlsx {
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $archive = $null
     $worksheetWriter = $null
+    $primaryError = $null
+    $cleanupError = $null
     $state = [pscustomobject]@{
         SchemaWritten = $false
         Columns = @()
@@ -422,6 +424,9 @@ function Export-SqlUtilityXlsx {
             $state.Columns = @($Columns)
             if ($state.Columns.Count -lt 1) {
                 throw [System.InvalidOperationException]::new('The row source schema must contain at least one column.')
+            }
+            if ($state.Columns.Count -gt 16384) {
+                throw [System.InvalidOperationException]::new('The row source schema exceeds the Excel limit of 16384 columns.')
             }
             $state.SchemaWritten = $true
 
@@ -487,12 +492,42 @@ function Export-SqlUtilityXlsx {
             [System.IO.File]::Move($temporaryPath, $destinationFullPath)
         }
     }
+    catch {
+        $primaryError = $_
+    }
     finally {
-        if ($null -ne $worksheetWriter) { $worksheetWriter.Dispose() }
-        if ($null -ne $archive) { $archive.Dispose() }
-        if ([System.IO.File]::Exists($temporaryPath)) {
-            [System.IO.File]::Delete($temporaryPath)
+        try {
+            if ($null -ne $worksheetWriter) { $worksheetWriter.Dispose() }
         }
-        $stopwatch.Stop()
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+        try {
+            if ($null -ne $archive) { $archive.Dispose() }
+        }
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+        try {
+            if ([System.IO.File]::Exists($temporaryPath)) {
+                [System.IO.File]::Delete($temporaryPath)
+            }
+        }
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+        try {
+            $stopwatch.Stop()
+        }
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+    }
+
+    if ($null -ne $primaryError) {
+        $PSCmdlet.ThrowTerminatingError($primaryError)
+    }
+    if ($null -ne $cleanupError) {
+        $PSCmdlet.ThrowTerminatingError($cleanupError)
     }
 }

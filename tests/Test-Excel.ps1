@@ -175,6 +175,46 @@ try {
         $emptyArchive.Dispose()
     }
 
+    foreach ($validMaximum in @(0, 1048575)) {
+        $maximumBoundaryPath = Join-Path $testRoot "maximum-$validMaximum.xlsx"
+        Export-SqlUtilityXlsx -DestinationPath $maximumBoundaryPath `
+            -RowSource (New-SqlUtilityDataTableRowSource $emptyTable) -TimeoutSeconds 30 `
+            -MaximumDataRows $validMaximum
+        Assert-True (Test-Path -LiteralPath $maximumBoundaryPath -PathType Leaf) `
+            "MaximumDataRows accepts the Excel data-row boundary $validMaximum"
+    }
+
+    foreach ($invalidMaximum in @(-1, 1048576)) {
+        $invalidMaximumPath = Join-Path $testRoot "invalid-maximum-$invalidMaximum.xlsx"
+        Assert-Throws {
+            Export-SqlUtilityXlsx -DestinationPath $invalidMaximumPath `
+                -RowSource (New-SqlUtilityDataTableRowSource $emptyTable) -TimeoutSeconds 30 `
+                -MaximumDataRows $invalidMaximum
+        } 'System.Management.Automation.ParameterBindingValidationException' `
+            "MaximumDataRows rejects the out-of-range value $invalidMaximum before package creation"
+        Assert-True (-not (Test-Path -LiteralPath $invalidMaximumPath)) `
+            "Rejected MaximumDataRows $invalidMaximum leaves no destination"
+        Assert-NoTemporaryFiles $testRoot "Rejected MaximumDataRows $invalidMaximum leaves no temporary file"
+    }
+
+    Assert-Equal 'XFD' (ConvertTo-SqlUtilityExcelColumnName 16384) 'Excel column boundary 16384 converts to XFD'
+
+    $schemaColumn = [pscustomobject]@{ Name = 'Value'; DataType = [string]; Ordinal = 0 }
+    $tooManyColumns = [object[]]::new(16385)
+    for ($columnIndex = 0; $columnIndex -lt $tooManyColumns.Count; $columnIndex++) {
+        $tooManyColumns[$columnIndex] = $schemaColumn
+    }
+    $tooManyColumnsSource = {
+        param($OnSchema, $OnRow, $ShouldContinue)
+        $null = & $OnSchema $tooManyColumns
+    }
+    $tooManyColumnsPath = Join-Path $testRoot 'too-many-columns.xlsx'
+    Assert-Throws {
+        Export-SqlUtilityXlsx -DestinationPath $tooManyColumnsPath -RowSource $tooManyColumnsSource -TimeoutSeconds 30
+    } 'System.InvalidOperationException' 'A 16385-column schema is rejected before an XFE header can be written'
+    Assert-True (-not (Test-Path -LiteralPath $tooManyColumnsPath)) 'Rejected 16385-column schema leaves no destination'
+    Assert-NoTemporaryFiles $testRoot 'Rejected 16385-column schema deletes its temporary package'
+
     foreach ($boundary in @(
         @{ Count = 26; Expected = 'A1:Z1' },
         @{ Count = 27; Expected = 'A1:AA1' }

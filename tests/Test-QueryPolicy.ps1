@@ -18,6 +18,8 @@ $accepted = @(
     @{ Name = 'nested order by does not order result'; Sql = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' },
     @{ Name = 'compound scalar expression'; Sql = "SELECT CASE WHEN i.Score >= 10 AND i.Name IS NOT NULL THEN COALESCE(i.Score, 0) ELSE -1 END AS Score FROM dbo.Items AS i WHERE i.Id <> 0 AND (i.Enabled = 1 OR i.Name LIKE 'A%') ORDER BY i.Id DESC"; Table = 'dbo.Items'; Ordered = $true; Normalized = "SELECT CASE WHEN i.Score >= 10 AND i.Name IS NOT NULL THEN COALESCE(i.Score, 0) ELSE -1 END AS Score FROM dbo.Items AS i WHERE i.Id <> 0 AND (i.Enabled = 1 OR i.Name LIKE 'A%') ORDER BY i.Id DESC" },
     @{ Name = 'qualified wildcard decimal and negated operators'; Sql = "SELECT i.*, i.Price * 1.25 AS AdjustedPrice FROM dbo.Items AS i WHERE i.Id NOT IN (1, 2) AND i.Name NOT LIKE 'X%' ORDER BY i.Price DESC"; Table = 'dbo.Items'; Ordered = $true; Normalized = "SELECT i.*, i.Price * 1.25 AS AdjustedPrice FROM dbo.Items AS i WHERE i.Id NOT IN (1, 2) AND i.Name NOT LIKE 'X%' ORDER BY i.Price DESC" },
+    @{ Name = 'Unicode string literal'; Sql = "SELECT N'unicode' AS [Value] FROM dbo.Items"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT N'unicode' AS [Value] FROM dbo.Items" },
+    @{ Name = 'leading decimal literal'; Sql = 'SELECT .5 AS Fraction FROM dbo.Items WHERE Ratio >= .5'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT .5 AS Fraction FROM dbo.Items WHERE Ratio >= .5' },
     @{ Name = 'statement starters in non-executable text'; Sql = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT 'WAITFOR KILL SHUTDOWN RECONFIGURE CHECKPOINT PRINT RAISERROR THROW RETURN GOTO' AS [PRINT], [KILL] FROM dbo.Items /* BREAK CONTINUE IF WHILE OPEN CLOSE DEALLOCATE SAVE REVERT */" },
     @{ Name = 'final semicolon before line comment'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id; -- trailing comment'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT Id FROM dbo.Items ORDER BY Id -- trailing comment' },
     @{ Name = 'final semicolon before block comment'; Sql = "SELECT Id FROM dbo.Items ;`r`n/* trailing comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT Id FROM dbo.Items `r`n/* trailing comment ; */  " },
@@ -148,6 +150,13 @@ $rejected += @(
     @{ Name = 'empty GROUP BY expression'; Sql = 'SELECT Id FROM dbo.Items GROUP BY' },
     @{ Name = 'empty HAVING expression'; Sql = 'SELECT Id FROM dbo.Items GROUP BY Id HAVING' },
     @{ Name = 'empty ORDER BY expression'; Sql = 'SELECT Id FROM dbo.Items ORDER BY' }
+)
+
+$rejected += @(
+    @{ Name = 'parenthesis cannot follow completed operand'; Sql = 'SELECT * FROM dbo.Items WHERE Id = 1 (FROBNICATE target)' },
+    @{ Name = 'nested group content is validated'; Sql = 'SELECT * FROM dbo.Items WHERE (Id = 1 FROBNICATE target)' },
+    @{ Name = 'duplicate equals operators'; Sql = 'SELECT * FROM dbo.Items WHERE Id = = 1' },
+    @{ Name = 'spaced symbols do not form compound operator'; Sql = 'SELECT * FROM dbo.Items WHERE Id > = 1' }
 )
 
 foreach ($case in $rejected) {

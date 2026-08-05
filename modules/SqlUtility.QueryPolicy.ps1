@@ -57,8 +57,12 @@ function Get-SqlUtilitySqlTokens {
             continue
         }
 
-        if ($character -eq "'") {
+        $isUnicodeString = ($character -eq 'N' -or $character -eq 'n') -and ($index + 1) -lt $length -and $Sql[$index + 1] -eq "'"
+        if ($character -eq "'" -or $isUnicodeString) {
             $start = $index
+            if ($isUnicodeString) {
+                $index++
+            }
             $index++
             $closed = $false
             while ($index -lt $length) {
@@ -236,12 +240,67 @@ function Test-SqlUtilityIdentifierToken {
     return $Token.Text -match '^[\p{L}_][\p{L}\p{Nd}_@$]*$'
 }
 
+function Test-SqlUtilityWindowExpression {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [Parameter(Mandatory = $true)][int] $BaseDepth
+    )
+
+    if ($Start -ge $End) {
+        return $true
+    }
+
+    $partitionStart = $null
+    $orderStart = $null
+    if (
+        ($Start + 1) -lt $End -and
+        $Tokens[$Start].Depth -eq $BaseDepth -and $Tokens[$Start].Kind -eq 'Word' -and $Tokens[$Start].Upper -eq 'PARTITION' -and
+        $Tokens[$Start + 1].Depth -eq $BaseDepth -and $Tokens[$Start + 1].Kind -eq 'Word' -and $Tokens[$Start + 1].Upper -eq 'BY'
+    ) {
+        $partitionStart = $Start + 2
+    }
+    elseif (
+        ($Start + 1) -lt $End -and
+        $Tokens[$Start].Depth -eq $BaseDepth -and $Tokens[$Start].Kind -eq 'Word' -and $Tokens[$Start].Upper -eq 'ORDER' -and
+        $Tokens[$Start + 1].Depth -eq $BaseDepth -and $Tokens[$Start + 1].Kind -eq 'Word' -and $Tokens[$Start + 1].Upper -eq 'BY'
+    ) {
+        $orderStart = $Start + 2
+    }
+    else {
+        return $false
+    }
+
+    if ($null -ne $partitionStart) {
+        for ($index = $partitionStart; $index -lt ($End - 1); $index++) {
+            if (
+                $Tokens[$index].Depth -eq $BaseDepth -and $Tokens[$index].Kind -eq 'Word' -and $Tokens[$index].Upper -eq 'ORDER' -and
+                $Tokens[$index + 1].Depth -eq $BaseDepth -and $Tokens[$index + 1].Kind -eq 'Word' -and $Tokens[$index + 1].Upper -eq 'BY'
+            ) {
+                $orderStart = $index + 2
+                if (-not (Test-SqlUtilityExpressionList -Tokens $Tokens -Start $partitionStart -End $index -BaseDepth $BaseDepth -AllowComma $true)) {
+                    return $false
+                }
+                break
+            }
+        }
+        if ($null -eq $orderStart) {
+            return Test-SqlUtilityExpressionList -Tokens $Tokens -Start $partitionStart -End $End -BaseDepth $BaseDepth -AllowComma $true
+        }
+    }
+
+    return Test-SqlUtilityExpressionList -Tokens $Tokens -Start $orderStart -End $End -BaseDepth $BaseDepth -AllowComma $true -AllowOrdering $true
+}
+
 function Test-SqlUtilityScalarExpression {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][object[]] $Tokens,
         [Parameter(Mandatory = $true)][int] $Start,
         [Parameter(Mandatory = $true)][int] $End,
+        [int] $BaseDepth = 0,
         [bool] $AllowAlias = $false,
         [bool] $AllowOrdering = $false
     )
@@ -251,24 +310,29 @@ function Test-SqlUtilityScalarExpression {
     }
 
     $expectOperand = $true
-    $operatorContinuation = $false
+    $expectWindowGroup = $false
+    $canCall = $false
     $caseDepth = 0
     $index = $Start
-    $operatorSymbols = @('+', '-', '*', '/', '%', '=', '<', '>', '!', '~', '&', '|', '^')
-    $binaryWordOperators = @('AND', 'OR', 'LIKE', 'IN', 'IS', 'BETWEEN', 'COLLATE', 'OVER')
+    $binarySymbols = @('+', '-', '*', '/', '%', '=', '<', '>', '&', '|', '^')
+    $compoundSymbols = @('<>', '<=', '>=', '!=', '!<', '!>')
+    $binaryWordOperators = @('AND', 'OR', 'LIKE', 'IN', 'IS', 'BETWEEN', 'COLLATE')
 
     while ($index -lt $End) {
         $token = $Tokens[$index]
 
-        if ($token.Depth -gt 0) {
+        if ($token.Depth -gt $BaseDepth) {
             $index++
             continue
+        }
+        if ($token.Depth -lt $BaseDepth) {
+            return $false
         }
 
         if ($token.Kind -eq 'Symbol' -and $token.Text -eq '(') {
             $closeIndex = $index + 1
             while ($closeIndex -lt $End) {
-                if ($Tokens[$closeIndex].Depth -eq 0 -and $Tokens[$closeIndex].Kind -eq 'Symbol' -and $Tokens[$closeIndex].Text -eq ')') {
+                if ($Tokens[$closeIndex].Depth -eq $BaseDepth -and $Tokens[$closeIndex].Kind -eq 'Symbol' -and $Tokens[$closeIndex].Text -eq ')') {
                     break
                 }
                 $closeIndex++
@@ -276,12 +340,39 @@ function Test-SqlUtilityScalarExpression {
             if ($closeIndex -ge $End) {
                 return $false
             }
-            if ($expectOperand -and $closeIndex -eq ($index + 1)) {
-                return $false
+
+            if ($expectWindowGroup) {
+                if (-not (Test-SqlUtilityWindowExpression -Tokens $Tokens -Start ($index + 1) -End $closeIndex -BaseDepth ($BaseDepth + 1))) {
+                    return $false
+                }
+            }
+            elseif ($expectOperand) {
+                if (-not (Test-SqlUtilityExpressionList -Tokens $Tokens -Start ($index + 1) -End $closeIndex -BaseDepth ($BaseDepth + 1) -AllowComma $true)) {
+                    return $false
+                }
+            }
+            else {
+                if (-not $canCall) {
+                    return $false
+                }
+                if (($index + 1) -lt $closeIndex) {
+                    $argumentStart = $index + 1
+                    if (
+                        $Tokens[$argumentStart].Depth -eq ($BaseDepth + 1) -and
+                        $Tokens[$argumentStart].Kind -eq 'Word' -and
+                        ($Tokens[$argumentStart].Upper -eq 'DISTINCT' -or $Tokens[$argumentStart].Upper -eq 'ALL')
+                    ) {
+                        $argumentStart++
+                    }
+                    if (-not (Test-SqlUtilityExpressionList -Tokens $Tokens -Start $argumentStart -End $closeIndex -BaseDepth ($BaseDepth + 1) -AllowComma $true)) {
+                        return $false
+                    }
+                }
             }
 
             $expectOperand = $false
-            $operatorContinuation = $false
+            $expectWindowGroup = $false
+            $canCall = $false
             $index = $closeIndex + 1
             continue
         }
@@ -293,7 +384,7 @@ function Test-SqlUtilityScalarExpression {
                         return $false
                     }
                     $caseDepth++
-                    $operatorContinuation = $false
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -302,7 +393,7 @@ function Test-SqlUtilityScalarExpression {
                         return $false
                     }
                     $expectOperand = $true
-                    $operatorContinuation = $false
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -311,7 +402,7 @@ function Test-SqlUtilityScalarExpression {
                         return $false
                     }
                     $expectOperand = $true
-                    $operatorContinuation = $false
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -321,7 +412,7 @@ function Test-SqlUtilityScalarExpression {
                     }
                     $caseDepth--
                     $expectOperand = $false
-                    $operatorContinuation = $false
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -329,17 +420,28 @@ function Test-SqlUtilityScalarExpression {
                     if (-not $expectOperand) {
                         if (
                             ($index + 1) -ge $End -or
+                            $Tokens[$index + 1].Depth -ne $BaseDepth -or
                             $Tokens[$index + 1].Kind -ne 'Word' -or
                             @('LIKE', 'IN', 'BETWEEN') -notcontains $Tokens[$index + 1].Upper
                         ) {
                             return $false
                         }
                         $expectOperand = $true
-                        $operatorContinuation = $false
+                        $canCall = $false
                         $index += 2
                         continue
                     }
-                    $operatorContinuation = $false
+                    $canCall = $false
+                    $index++
+                    continue
+                }
+                if ($token.Upper -eq 'OVER') {
+                    if ($expectOperand) {
+                        return $false
+                    }
+                    $expectOperand = $true
+                    $expectWindowGroup = $true
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -348,7 +450,7 @@ function Test-SqlUtilityScalarExpression {
                         return $false
                     }
                     $expectOperand = $true
-                    $operatorContinuation = $false
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -356,6 +458,7 @@ function Test-SqlUtilityScalarExpression {
                     if (-not $AllowOrdering -or $expectOperand -or $index -ne ($End - 1)) {
                         return $false
                     }
+                    $canCall = $false
                     $index++
                     continue
                 }
@@ -374,74 +477,107 @@ function Test-SqlUtilityScalarExpression {
                 return $false
             }
             $expectOperand = $false
-            $operatorContinuation = $false
+            $canCall = $token.Kind -eq 'Identifier' -or $token.Text -match '^[\p{L}_]'
             $index++
             continue
         }
 
-        if ($token.Kind -eq 'Symbol' -and $token.Text.StartsWith("'")) {
+        if (
+            $token.Kind -eq 'Symbol' -and
+            ($token.Text.StartsWith("'") -or $token.Text -match "^[Nn]'")
+        ) {
             if (-not $expectOperand) {
                 return $false
             }
             $expectOperand = $false
-            $operatorContinuation = $false
+            $canCall = $false
             $index++
             continue
         }
 
         if ($token.Kind -eq 'Symbol' -and $token.Text -eq '.') {
-            if ($expectOperand -or ($index + 1) -ge $End) {
+            if (($index + 1) -ge $End) {
                 return $false
             }
 
-            $previousToken = $Tokens[$index - 1]
             $nextToken = $Tokens[$index + 1]
+            if ($expectOperand) {
+                if ($nextToken.Depth -ne $BaseDepth -or $nextToken.Kind -ne 'Word' -or $nextToken.Text -notmatch '^\d+$') {
+                    return $false
+                }
+                $expectOperand = $false
+                $canCall = $false
+                $index += 2
+                continue
+            }
+
+            $previousToken = $Tokens[$index - 1]
             if (
                 $previousToken.Kind -eq 'Word' -and $previousToken.Text -match '^\d+$' -and
-                $nextToken.Kind -eq 'Word' -and $nextToken.Text -match '^\d+$'
+                $nextToken.Depth -eq $BaseDepth -and $nextToken.Kind -eq 'Word' -and $nextToken.Text -match '^\d+$'
             ) {
                 $expectOperand = $false
-                $operatorContinuation = $false
+                $canCall = $false
                 $index += 2
                 continue
             }
             if (
-                -not (Test-SqlUtilityIdentifierToken -Token $nextToken) -and
-                -not ($nextToken.Kind -eq 'Symbol' -and $nextToken.Text -eq '*')
+                $nextToken.Depth -ne $BaseDepth -or
+                (-not (Test-SqlUtilityIdentifierToken -Token $nextToken) -and -not ($nextToken.Kind -eq 'Symbol' -and $nextToken.Text -eq '*'))
             ) {
                 return $false
             }
             $expectOperand = $true
-            $operatorContinuation = $false
+            $canCall = $false
             $index++
             continue
         }
 
-        if ($token.Kind -eq 'Symbol' -and $operatorSymbols -contains $token.Text) {
-            if ($expectOperand) {
-                if ($token.Text -eq '*') {
-                    $expectOperand = $false
-                    $operatorContinuation = $false
-                }
-                elseif ($token.Text -eq '+' -or $token.Text -eq '-' -or $token.Text -eq '~' -or $operatorContinuation) {
-                    $operatorContinuation = $true
-                }
-                else {
-                    return $false
-                }
-            }
-            else {
-                $expectOperand = $true
-                $operatorContinuation = $true
-            }
+        if ($token.Kind -eq 'Symbol' -and (@('+', '-', '~') -contains $token.Text) -and $expectOperand) {
+            $canCall = $false
             $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and $token.Text -eq '*' -and $expectOperand) {
+            $expectOperand = $false
+            $canCall = $false
+            $index++
+            continue
+        }
+
+        if ($token.Kind -eq 'Symbol' -and -not $expectOperand) {
+            $operatorLength = 1
+            $operatorText = $token.Text
+            if (
+                ($index + 1) -lt $End -and
+                $Tokens[$index + 1].Depth -eq $BaseDepth -and
+                $Tokens[$index + 1].Kind -eq 'Symbol' -and
+                $token.End -eq $Tokens[$index + 1].Start
+            ) {
+                $compoundOperator = $token.Text + $Tokens[$index + 1].Text
+                if ($compoundSymbols -contains $compoundOperator) {
+                    $operatorText = $compoundOperator
+                    $operatorLength = 2
+                }
+            }
+            if ($operatorLength -eq 1 -and $binarySymbols -notcontains $operatorText) {
+                return $false
+            }
+            if ($operatorText -eq '!') {
+                return $false
+            }
+
+            $expectOperand = $true
+            $canCall = $false
+            $index += $operatorLength
             continue
         }
 
         return $false
     }
 
-    return (-not $expectOperand) -and $caseDepth -eq 0
+    return (-not $expectOperand) -and (-not $expectWindowGroup) -and $caseDepth -eq 0
 }
 
 function Test-SqlUtilityExpressionList {
@@ -450,6 +586,7 @@ function Test-SqlUtilityExpressionList {
         [Parameter(Mandatory = $true)][object[]] $Tokens,
         [Parameter(Mandatory = $true)][int] $Start,
         [Parameter(Mandatory = $true)][int] $End,
+        [int] $BaseDepth = 0,
         [bool] $AllowComma = $false,
         [bool] $AllowAlias = $false,
         [bool] $AllowOrdering = $false
@@ -462,18 +599,18 @@ function Test-SqlUtilityExpressionList {
     $itemStart = $Start
     for ($index = $Start; $index -lt $End; $index++) {
         $token = $Tokens[$index]
-        if ($token.Depth -eq 0 -and $token.Kind -eq 'Symbol' -and $token.Text -eq ',') {
+        if ($token.Depth -eq $BaseDepth -and $token.Kind -eq 'Symbol' -and $token.Text -eq ',') {
             if (-not $AllowComma) {
                 return $false
             }
-            if (-not (Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $index -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering)) {
+            if (-not (Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $index -BaseDepth $BaseDepth -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering)) {
                 return $false
             }
             $itemStart = $index + 1
         }
     }
 
-    return Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $End -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering
+    return Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $itemStart -End $End -BaseDepth $BaseDepth -AllowAlias $AllowAlias -AllowOrdering $AllowOrdering
 }
 
 function Test-SqlUtilityQuery {

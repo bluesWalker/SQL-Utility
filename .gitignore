@@ -4,3 +4,5 @@
 /.worktrees/
 /SqlUtility.config.json
 /.SqlUtility.config.*.tmp
+/.SqlUtility.config.*.bak
+*.xlsx.*.bak

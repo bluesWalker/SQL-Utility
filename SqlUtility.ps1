@@ -578,6 +578,15 @@ function Invoke-SqlUtilityExportAction {
     if ($state.IsBusy -or $state.IsQueryStale -or $null -eq $state.CurrentResult -or $null -eq $state.ExecutedQuery) {
         return
     }
+    if (
+        -not [bool] $state.ExecutedQuery.HasOrderBy -and
+        (-not [bool] $state.CurrentResult.IsComplete -or [bool] $state.CurrentResult.IsTruncated)
+    ) {
+        Show-SqlUtilityMessage -State $state `
+            -Text 'This unordered result is incomplete and cannot be exported. Add ORDER BY and run the query again for a complete export.' `
+            -Caption 'Export Unavailable' -Icon 'Warning'
+        return
+    }
 
     $busyStarted = $false
     try {
@@ -1013,7 +1022,7 @@ function Start-SqlUtilityApplication {
         & $showMessage $_.Exception.Message 'SQL Utility Configuration Error' 'Error'
         return
     }
-    catch {
+    catch [System.IO.InvalidDataException] {
         $showMessage = $Services['ShowMessage']
         & $showMessage ("The configuration file could not be read.`r`n`r`n{0}" -f $_.Exception.Message) 'SQL Utility Configuration Error' 'Error'
         $confirm = $Services['Confirm']
@@ -1032,6 +1041,11 @@ function Start-SqlUtilityApplication {
             & $showMessage ("The configuration file could not be reset.`r`n`r`n{0}" -f $_.Exception.Message) 'SQL Utility Configuration Error' 'Error'
             return
         }
+    }
+    catch {
+        $showMessage = $Services['ShowMessage']
+        & $showMessage ("The configuration file could not be read.`r`n`r`n{0}" -f $_.Exception.Message) 'SQL Utility Configuration Error' 'Error'
+        return
     }
 
     $form = $null

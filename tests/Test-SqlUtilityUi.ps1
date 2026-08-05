@@ -618,6 +618,13 @@ try {
     Assert-Equal 1 $truncatedHarness.Recorder.LocalPageCalls.Count 'Truncated result pages locally'
     Assert-Equal 500 (Get-TestControl $truncatedForm 'ResultsGrid').Rows.Count 'Truncated second page retains remaining bounded rows'
     Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Local paging does not repeat truncation popup'
+
+    $truncatedHarness.Recorder.PromptPath = 'C:\exports\must-not-export.xlsx'
+    Invoke-SqlUtilityExportAction -Form $truncatedForm
+    Assert-Equal 0 $truncatedHarness.Recorder.PromptCalls 'Incomplete unordered export is rejected before the save prompt'
+    Assert-Equal 0 $truncatedHarness.Recorder.ExportCalls.Count 'Incomplete unordered export never invokes the exporter'
+    Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'incomplete').Count `
+        'Incomplete unordered export explains that the bounded result cannot be exported as complete'
 }
 finally {
     $truncatedForm.Close()
@@ -931,6 +938,24 @@ try {
     Assert-Equal 0 $futureHarness.Recorder.DialogCalls 'Unsupported schema exits without showing form'
     Assert-Equal 1 @($futureHarness.Recorder.Messages | Where-Object Icon -eq 'Error').Count 'Unsupported schema shows one error'
     Assert-Equal ($futureBytes -join ',') ([System.IO.File]::ReadAllBytes($futurePath) -join ',') 'Unsupported schema preserves bytes'
+
+    $lockedPath = Join-Path $startupRoot 'locked.json'
+    $lockedText = '{"schemaVersion":1,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
+    $lockedBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($lockedText)
+    [System.IO.File]::WriteAllBytes($lockedPath, $lockedBytes)
+    $lockedHarness = New-TestServices
+    $lockedFile = [System.IO.File]::Open($lockedPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        Start-SqlUtilityApplication -ConfigPath $lockedPath -Services $lockedHarness.Services
+    }
+    finally {
+        $lockedFile.Dispose()
+    }
+    Assert-Equal 0 $lockedHarness.Recorder.ConfirmCalls.Count 'Locked configuration never offers destructive reset'
+    Assert-Equal 0 $lockedHarness.Recorder.WriteCalls.Count 'Locked configuration never attempts a reset write'
+    Assert-Equal 0 $lockedHarness.Recorder.DialogCalls 'Locked configuration exits without showing the form'
+    Assert-Equal 1 @($lockedHarness.Recorder.Messages | Where-Object Icon -eq 'Error').Count 'Locked configuration shows one read error'
+    Assert-Equal ($lockedBytes -join ',') ([System.IO.File]::ReadAllBytes($lockedPath) -join ',') 'Locked configuration preserves its bytes'
 }
 finally {
     if (Test-Path -LiteralPath $startupRoot) {

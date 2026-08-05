@@ -140,13 +140,34 @@ function Read-SqlUtilityConfig {
     )
 
     try {
-        $inputObject = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+        $json = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
     }
     catch [System.Management.Automation.ItemNotFoundException] {
         return New-SqlUtilityDefaultConfig
     }
 
-    return ConvertTo-SqlUtilityValidatedConfig -InputObject $inputObject
+    try {
+        $inputObject = $json | ConvertFrom-Json
+        return ConvertTo-SqlUtilityValidatedConfig -InputObject $inputObject
+    }
+    catch [System.NotSupportedException] {
+        throw
+    }
+    catch {
+        throw [System.IO.InvalidDataException]::new(
+            ("The configuration file is malformed or does not match the required schema. {0}" -f $_.Exception.Message),
+            $_.Exception
+        )
+    }
+}
+
+function Remove-SqlUtilityConfigTransientFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $TransientPath
+    )
+
+    [System.IO.File]::Delete($TransientPath)
 }
 
 function Write-SqlUtilityConfig {
@@ -164,41 +185,54 @@ function Write-SqlUtilityConfig {
 
     $temporaryPath = Join-Path $directory ('.SqlUtility.config.{0}.tmp' -f [guid]::NewGuid().ToString('N'))
     $backupPath = Join-Path $directory ('.SqlUtility.config.{0}.bak' -f [guid]::NewGuid().ToString('N'))
+    $primaryError = $null
+    $cleanupError = $null
+    $destinationCommitted = $false
     try {
         $json = $validated | ConvertTo-Json -Depth 4
         [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
         if ([System.IO.File]::Exists($Path)) {
-            $replacementError = $null
-            try {
-                [System.IO.File]::Replace($temporaryPath, $Path, $backupPath)
-            }
-            catch {
-                $replacementError = $_
-                throw
-            }
-            finally {
-                if ([System.IO.File]::Exists($backupPath)) {
-                    try {
-                        [System.IO.File]::Delete($backupPath)
-                    }
-                    catch {
-                        if ($null -eq $replacementError) {
-                            throw
-                        }
-                    }
-                }
-            }
+            [System.IO.File]::Replace($temporaryPath, $Path, $backupPath)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)
         }
-        return $validated
+        $destinationCommitted = $true
+    }
+    catch {
+        $primaryError = $_
     }
     finally {
         if ([System.IO.File]::Exists($temporaryPath)) {
-            [System.IO.File]::Delete($temporaryPath)
+            try {
+                Remove-SqlUtilityConfigTransientFile -TransientPath $temporaryPath
+            }
+            catch {
+                if ($null -eq $cleanupError) { $cleanupError = $_ }
+            }
+        }
+        if ($destinationCommitted -and [System.IO.File]::Exists($backupPath)) {
+            try {
+                Remove-SqlUtilityConfigTransientFile -TransientPath $backupPath
+            }
+            catch {
+                if ($null -eq $cleanupError) { $cleanupError = $_ }
+            }
         }
     }
+
+    if ($null -ne $primaryError) {
+        $PSCmdlet.ThrowTerminatingError($primaryError)
+    }
+    if ($null -ne $cleanupError) {
+        if ($destinationCommitted) {
+            Write-Warning ("The configuration was saved, but a transient file could not be removed: {0}" -f $cleanupError.Exception.Message)
+            return $validated
+        }
+        $PSCmdlet.ThrowTerminatingError($cleanupError)
+    }
+
+    return $validated
 }
 
 function Add-SqlUtilitySavedConnection {

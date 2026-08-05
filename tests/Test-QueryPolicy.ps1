@@ -24,6 +24,14 @@ $accepted = @(
     @{ Name = 'final semicolon before line comment'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id; -- trailing comment'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT Id FROM dbo.Items ORDER BY Id -- trailing comment' },
     @{ Name = 'final semicolon before block comment'; Sql = "SELECT Id FROM dbo.Items ;`r`n/* trailing comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT Id FROM dbo.Items `r`n/* trailing comment ; */  " },
     @{ Name = 'escaped delimiters'; Sql = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]'; Table = '[dbo].[Items]'; Ordered = $false; Normalized = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]' }
+    @{ Name = 'balanced nested block comments'; Sql = 'SELECT /* outer /* inner */ outer */ Id FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT /* outer /* inner */ outer */ Id FROM dbo.Items' }
+    @{ Name = 'ordinary implicit select alias'; Sql = 'SELECT Id ItemId FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT Id ItemId FROM dbo.Items' }
+    @{ Name = 'delimited implicit select alias'; Sql = 'SELECT Id [SHUTDOWN] FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT Id [SHUTDOWN] FROM dbo.Items' }
+    @{ Name = 'delimited reserved table alias'; Sql = 'SELECT [SHUTDOWN].Id FROM dbo.Items [SHUTDOWN]'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT [SHUTDOWN].Id FROM dbo.Items [SHUTDOWN]' }
+    @{ Name = 'CAST scalar type'; Sql = 'SELECT CAST(Id AS bigint) AS ConvertedId FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Id AS bigint) AS ConvertedId FROM dbo.Items' }
+    @{ Name = 'CAST length type and implicit alias'; Sql = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items' }
+    @{ Name = 'CAST precision and scale type'; Sql = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items' }
+    @{ Name = 'TRY_CAST maximum length type'; Sql = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items' }
 )
 
 foreach ($case in $accepted) {
@@ -157,6 +165,24 @@ $rejected += @(
     @{ Name = 'nested group content is validated'; Sql = 'SELECT * FROM dbo.Items WHERE (Id = 1 FROBNICATE target)' },
     @{ Name = 'duplicate equals operators'; Sql = 'SELECT * FROM dbo.Items WHERE Id = = 1' },
     @{ Name = 'spaced symbols do not form compound operator'; Sql = 'SELECT * FROM dbo.Items WHERE Id > = 1' }
+)
+
+$rejected += @(
+    @{ Name = 'SHUTDOWN cannot be an implicit table alias'; Sql = "SELECT * FROM dbo.Items`r`nSHUTDOWN" },
+    @{ Name = 'CHECKPOINT cannot be an implicit table alias after a block comment'; Sql = 'SELECT * FROM dbo.Items /* boundary */ CHECKPOINT;' },
+    @{ Name = 'RECONFIGURE cannot be an implicit table alias after a line comment'; Sql = "SELECT * FROM dbo.Items -- boundary`r`nRECONFIGURE;" },
+    @{ Name = 'statement starter cannot be an implicit select alias'; Sql = 'SELECT Id SHUTDOWN FROM dbo.Items' },
+    @{ Name = 'reserved word cannot be an implicit select alias'; Sql = 'SELECT Id DELETE FROM dbo.Items' },
+    @{ Name = 'unclosed nested block comment'; Sql = 'SELECT /* outer /* inner */ Id FROM dbo.Items */' },
+    @{ Name = 'CAST requires a type'; Sql = 'SELECT CAST(Id AS) FROM dbo.Items' },
+    @{ Name = 'CAST requires a source expression'; Sql = 'SELECT CAST(AS int) FROM dbo.Items' },
+    @{ Name = 'CAST rejects an empty type argument'; Sql = 'SELECT CAST(Id AS decimal()) FROM dbo.Items' },
+    @{ Name = 'CAST rejects a missing scale'; Sql = 'SELECT CAST(Id AS decimal(18,)) FROM dbo.Items' },
+    @{ Name = 'CAST rejects excess type arguments'; Sql = 'SELECT CAST(Id AS decimal(18,2,1)) FROM dbo.Items' },
+    @{ Name = 'TRY_CAST rejects malformed precision and scale'; Sql = 'SELECT TRY_CAST(Id AS decimal(18 2)) FROM dbo.Items' },
+    @{ Name = 'generic function cannot use AS'; Sql = 'SELECT COALESCE(Id AS bigint) FROM dbo.Items' },
+    @{ Name = 'CAST AS cannot bypass expression boundary'; Sql = 'SELECT CAST(Id FROBNICATE AS bigint) FROM dbo.Items' },
+    @{ Name = 'CAST rejects a second AS'; Sql = 'SELECT CAST(Id AS bigint AS ConvertedId) FROM dbo.Items' }
 )
 
 foreach ($case in $rejected) {

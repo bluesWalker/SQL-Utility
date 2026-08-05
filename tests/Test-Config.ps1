@@ -44,6 +44,63 @@ try {
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.tmp' -File).Count 'Successful replacement leaves no temporary sibling'
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File).Count 'Successful replacement leaves no backup sibling'
 
+    $cleanupFailureConfig = ConvertTo-SqlUtilityValidatedConfig -InputObject $replaced
+    $cleanupFailureConfig.unorderedRowLimit = 1600
+    $script:ConfigCleanupPaths = [System.Collections.Generic.List[string]]::new()
+    $originalCleanupCommand = Get-Command -Name Remove-SqlUtilityConfigTransientFile -CommandType Function -ErrorAction SilentlyContinue
+    $originalCleanupScript = if ($null -ne $originalCleanupCommand) { $originalCleanupCommand.ScriptBlock } else { $null }
+    try {
+        Set-Item -Path Function:\Remove-SqlUtilityConfigTransientFile -Value {
+            param([string] $TransientPath)
+            [void] $script:ConfigCleanupPaths.Add($TransientPath)
+            if ([System.IO.Path]::GetExtension($TransientPath) -eq '.bak') {
+                throw [System.IO.IOException]::new('simulated backup cleanup failure')
+            }
+            if ([System.IO.File]::Exists($TransientPath)) {
+                [System.IO.File]::Delete($TransientPath)
+            }
+        }
+
+        $cleanupWarnings = @()
+        $cleanupCommitError = $null
+        $committedAfterCleanupFailure = $null
+        try {
+            $committedAfterCleanupFailure = Write-SqlUtilityConfig -Path $roundTripPath `
+                -Config $cleanupFailureConfig -WarningVariable cleanupWarnings -WarningAction SilentlyContinue
+        }
+        catch {
+            $cleanupCommitError = $_
+        }
+
+        Assert-True ($null -eq $cleanupCommitError) 'Backup cleanup failure does not report a committed save as failed'
+        if ($null -ne $committedAfterCleanupFailure) {
+            Assert-Equal 1600 $committedAfterCleanupFailure.unorderedRowLimit `
+                'Backup cleanup failure still returns the committed configuration'
+        }
+        Assert-Equal 1600 (Read-SqlUtilityConfig -Path $roundTripPath).unorderedRowLimit `
+            'Backup cleanup failure leaves the new configuration committed'
+        Assert-Equal 1 @($cleanupWarnings).Count 'Backup cleanup failure is reported separately as one warning'
+        Assert-True (@($cleanupWarnings)[0].Message -match 'saved') `
+            'Backup cleanup warning identifies the save as committed'
+        $remainingBackups = @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File)
+        Assert-Equal 1 $remainingBackups.Count 'Interrupted backup cleanup leaves one recoverable sibling backup'
+        if ($remainingBackups.Count -eq 1) {
+            Assert-Equal $testRoot $remainingBackups[0].DirectoryName 'Transient backup is a sibling of the configuration file'
+        }
+        Assert-Equal 1 @($script:ConfigCleanupPaths | Where-Object { [System.IO.Path]::GetExtension($_) -eq '.bak' }).Count `
+            'Configuration replacement attempts backup cleanup exactly once'
+    }
+    finally {
+        if ($null -ne $originalCleanupScript) {
+            Set-Item -Path Function:\Remove-SqlUtilityConfigTransientFile -Value $originalCleanupScript
+        }
+        else {
+            Remove-Item -Path Function:\Remove-SqlUtilityConfigTransientFile -ErrorAction SilentlyContinue
+        }
+        Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File | Remove-Item -Force
+        Remove-Variable -Name ConfigCleanupPaths -Scope Script -ErrorAction SilentlyContinue
+    }
+
     $readLock = [System.IO.File]::Open($roundTripPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
     try {
         Assert-Throws { Read-SqlUtilityConfig -Path $roundTripPath } $null 'Locked configuration read propagates its I/O error'
@@ -117,7 +174,17 @@ try {
 
     $malformedPath = Join-Path $testRoot 'malformed.json'
     [System.IO.File]::WriteAllText($malformedPath, '{ malformed json')
-    Assert-Throws { Read-SqlUtilityConfig -Path $malformedPath } 'System.ArgumentException' 'Malformed JSON is rejected'
+    Assert-Throws { Read-SqlUtilityConfig -Path $malformedPath } 'System.IO.InvalidDataException' `
+        'Malformed JSON is classified as recoverable configuration corruption'
+
+    $invalidSchemaPath = Join-Path $testRoot 'invalid-schema.json'
+    [System.IO.File]::WriteAllText(
+        $invalidSchemaPath,
+        '{"schemaVersion":1,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120}',
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    Assert-Throws { Read-SqlUtilityConfig -Path $invalidSchemaPath } 'System.IO.InvalidDataException' `
+        'Invalid persisted schema is classified as recoverable configuration corruption'
 
     $withSecondPair = Add-SqlUtilitySavedConnection -Config $deduplicated -Server 'ServerB' -Database 'DbB'
     $removed = Remove-SqlUtilitySavedConnection -Config $withSecondPair -Server 'SERVERA' -Database 'DBA'

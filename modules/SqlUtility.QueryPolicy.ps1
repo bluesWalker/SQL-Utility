@@ -1,3 +1,26 @@
+$script:SqlUtilityReservedAliasWords = @{}
+foreach ($reservedWord in @(
+    'ADD','ALL','ALTER','AND','ANY','AS','ASC','AUTHORIZATION','BACKUP','BEGIN','BETWEEN','BREAK','BROWSE','BULK','BY',
+    'CASCADE','CASE','CAST','CHECK','CHECKPOINT','CLOSE','CLUSTERED','COALESCE','COLLATE','COLUMN','COMMIT','COMPUTE',
+    'CONSTRAINT','CONTAINS','CONTAINSTABLE','CONTINUE','CONVERT','CREATE','CROSS','CURRENT','CURRENT_DATE','CURRENT_TIME',
+    'CURRENT_TIMESTAMP','CURRENT_USER','CURSOR','DATABASE','DBCC','DEALLOCATE','DECLARE','DEFAULT','DELETE','DENY','DESC',
+    'DISABLE','DISK','DISTINCT','DISTRIBUTED','DOUBLE','DROP','DUMP','ELSE','ENABLE','END','ERRLVL','ESCAPE','EXCEPT',
+    'EXEC','EXECUTE','EXISTS','EXIT','EXTERNAL','FETCH','FILE','FILLFACTOR','FOR','FOREIGN','FREETEXT','FREETEXTTABLE',
+    'FROM','FULL','FUNCTION','GET','GOTO','GRANT','GROUP','HAVING','HOLDLOCK','IDENTITY','IDENTITY_INSERT','IDENTITYCOL',
+    'IF','IN','INDEX','INNER','INSERT','INTERSECT','INTO','IS','JOIN','KEY','KILL','LEFT','LIKE','LINENO','LOAD','MERGE',
+    'MOVE','NATIONAL','NOCHECK','NONCLUSTERED','NOT','NULL','NULLIF','OF','OFF','OFFSETS','ON','OPEN','OPENDATASOURCE',
+    'OPENQUERY','OPENROWSET','OPENXML','OPTION','OR','ORDER','OUTER','OVER','PERCENT','PIVOT','PLAN','PRECISION','PRIMARY',
+    'PRINT','PROC','PROCEDURE','PUBLIC','RAISERROR','READ','READTEXT','RECEIVE','RECONFIGURE','REFERENCES','RENAME',
+    'REPLICATION','RESTORE','RESTRICT','RETURN','REVERT','REVOKE','RIGHT','ROLLBACK','ROWCOUNT','ROWGUIDCOL','RULE','SAVE',
+    'SCHEMA','SECURITYAUDIT','SELECT','SEMANTICKEYPHRASETABLE','SEMANTICSIMILARITYDETAILSTABLE','SEMANTICSIMILARITYTABLE',
+    'SEND','SESSION_USER','SET','SETUSER','SHUTDOWN','SOME','STATISTICS','SYSTEM_USER','TABLE','TABLESAMPLE','TEXTSIZE',
+    'THEN','THROW','TO','TOP','TRAN','TRANSACTION','TRIGGER','TRUNCATE','TRY_CAST','TRY_CONVERT','TSEQUAL','UNION',
+    'UNIQUE','UNPIVOT','UPDATE','UPDATETEXT','USE','USER','VALUES','VARYING','VIEW','WAITFOR','WHEN','WHERE','WHILE',
+    'WITH','WRITETEXT'
+)) {
+    $script:SqlUtilityReservedAliasWords[$reservedWord] = $true
+}
+
 function New-SqlUtilityInvalidQueryResult {
     [CmdletBinding()]
     param(
@@ -42,16 +65,21 @@ function Get-SqlUtilitySqlTokens {
 
         if ($character -eq '/' -and ($index + 1) -lt $length -and $Sql[$index + 1] -eq '*') {
             $index += 2
-            $closed = $false
-            while ($index -lt $length) {
-                if ($Sql[$index] -eq '*' -and ($index + 1) -lt $length -and $Sql[$index + 1] -eq '/') {
+            $commentDepth = 1
+            while ($index -lt $length -and $commentDepth -gt 0) {
+                if ($Sql[$index] -eq '/' -and ($index + 1) -lt $length -and $Sql[$index + 1] -eq '*') {
+                    $commentDepth++
                     $index += 2
-                    $closed = $true
-                    break
+                    continue
+                }
+                if ($Sql[$index] -eq '*' -and ($index + 1) -lt $length -and $Sql[$index + 1] -eq '/') {
+                    $commentDepth--
+                    $index += 2
+                    continue
                 }
                 $index++
             }
-            if (-not $closed) {
+            if ($commentDepth -ne 0) {
                 throw [System.ArgumentException]::new('The SQL contains an unclosed block comment.')
             }
             continue
@@ -240,6 +268,124 @@ function Test-SqlUtilityIdentifierToken {
     return $Token.Text -match '^[\p{L}_][\p{L}\p{Nd}_@$]*$'
 }
 
+function Test-SqlUtilityAliasToken {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Token
+    )
+
+    if ($Token.Kind -eq 'Identifier') {
+        return $true
+    }
+    if (-not (Test-SqlUtilityIdentifierToken -Token $Token)) {
+        return $false
+    }
+
+    return -not $script:SqlUtilityReservedAliasWords.ContainsKey($Token.Upper)
+}
+
+function Test-SqlUtilityCastType {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [Parameter(Mandatory = $true)][int] $BaseDepth
+    )
+
+    if (
+        $Start -ge $End -or
+        $Tokens[$Start].Depth -ne $BaseDepth -or
+        -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$Start])
+    ) {
+        return $false
+    }
+
+    $index = $Start + 1
+    if (
+        $index -lt $End -and
+        $Tokens[$index].Depth -eq $BaseDepth -and
+        $Tokens[$index].Kind -eq 'Symbol' -and
+        $Tokens[$index].Text -eq '.'
+    ) {
+        $index++
+        if (
+            $index -ge $End -or
+            $Tokens[$index].Depth -ne $BaseDepth -or
+            -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index])
+        ) {
+            return $false
+        }
+        $index++
+    }
+
+    if ($index -eq $End) {
+        return $true
+    }
+    if (
+        $Tokens[$index].Depth -ne $BaseDepth -or
+        $Tokens[$index].Kind -ne 'Symbol' -or
+        $Tokens[$index].Text -ne '(' -or
+        $Tokens[$End - 1].Depth -ne $BaseDepth -or
+        $Tokens[$End - 1].Kind -ne 'Symbol' -or
+        $Tokens[$End - 1].Text -ne ')'
+    ) {
+        return $false
+    }
+
+    $argumentStart = $index + 1
+    $argumentCount = ($End - 1) - $argumentStart
+    if ($argumentCount -eq 1) {
+        $argument = $Tokens[$argumentStart]
+        return $argument.Depth -eq ($BaseDepth + 1) -and
+            $argument.Kind -eq 'Word' -and
+            ($argument.Text -match '^\d+$' -or $argument.Upper -eq 'MAX')
+    }
+    if ($argumentCount -eq 3) {
+        return $Tokens[$argumentStart].Depth -eq ($BaseDepth + 1) -and
+            $Tokens[$argumentStart].Kind -eq 'Word' -and $Tokens[$argumentStart].Text -match '^\d+$' -and
+            $Tokens[$argumentStart + 1].Depth -eq ($BaseDepth + 1) -and
+            $Tokens[$argumentStart + 1].Kind -eq 'Symbol' -and $Tokens[$argumentStart + 1].Text -eq ',' -and
+            $Tokens[$argumentStart + 2].Depth -eq ($BaseDepth + 1) -and
+            $Tokens[$argumentStart + 2].Kind -eq 'Word' -and $Tokens[$argumentStart + 2].Text -match '^\d+$'
+    }
+
+    return $false
+}
+
+function Test-SqlUtilityCastExpression {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start,
+        [Parameter(Mandatory = $true)][int] $End,
+        [Parameter(Mandatory = $true)][int] $BaseDepth
+    )
+
+    $asIndex = -1
+    for ($index = $Start; $index -lt $End; $index++) {
+        if (
+            $Tokens[$index].Depth -eq $BaseDepth -and
+            $Tokens[$index].Kind -eq 'Word' -and
+            $Tokens[$index].Upper -eq 'AS'
+        ) {
+            if ($asIndex -ne -1) {
+                return $false
+            }
+            $asIndex = $index
+        }
+    }
+
+    if ($asIndex -le $Start -or $asIndex -ge ($End - 1)) {
+        return $false
+    }
+    if (-not (Test-SqlUtilityScalarExpression -Tokens $Tokens -Start $Start -End $asIndex -BaseDepth $BaseDepth)) {
+        return $false
+    }
+
+    return Test-SqlUtilityCastType -Tokens $Tokens -Start ($asIndex + 1) -End $End -BaseDepth $BaseDepth
+}
+
 function Test-SqlUtilityWindowExpression {
     [CmdletBinding()]
     param(
@@ -312,6 +458,7 @@ function Test-SqlUtilityScalarExpression {
     $expectOperand = $true
     $expectWindowGroup = $false
     $canCall = $false
+    $callName = ''
     $caseDepth = 0
     $index = $Start
     $binarySymbols = @('+', '-', '*', '/', '%', '=', '<', '>', '&', '|', '^')
@@ -355,7 +502,12 @@ function Test-SqlUtilityScalarExpression {
                 if (-not $canCall) {
                     return $false
                 }
-                if (($index + 1) -lt $closeIndex) {
+                if ($callName -eq 'CAST' -or $callName -eq 'TRY_CAST') {
+                    if (-not (Test-SqlUtilityCastExpression -Tokens $Tokens -Start ($index + 1) -End $closeIndex -BaseDepth ($BaseDepth + 1))) {
+                        return $false
+                    }
+                }
+                elseif (($index + 1) -lt $closeIndex) {
                     $argumentStart = $index + 1
                     if (
                         $Tokens[$argumentStart].Depth -eq ($BaseDepth + 1) -and
@@ -466,7 +618,7 @@ function Test-SqlUtilityScalarExpression {
                     if (-not $AllowAlias -or $expectOperand -or $caseDepth -ne 0 -or ($index + 2) -ne $End) {
                         return $false
                     }
-                    if (-not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index + 1])) {
+                    if (-not (Test-SqlUtilityAliasToken -Token $Tokens[$index + 1])) {
                         return $false
                     }
                     return $true
@@ -474,10 +626,14 @@ function Test-SqlUtilityScalarExpression {
             }
 
             if (-not $expectOperand) {
+                if ($AllowAlias -and $caseDepth -eq 0 -and $index -eq ($End - 1) -and (Test-SqlUtilityAliasToken -Token $token)) {
+                    return $true
+                }
                 return $false
             }
             $expectOperand = $false
             $canCall = $token.Kind -eq 'Identifier' -or $token.Text -match '^[\p{L}_]'
+            $callName = if ($token.Kind -eq 'Word') { $token.Upper } else { '' }
             $index++
             continue
         }
@@ -752,15 +908,14 @@ function Test-SqlUtilityQuery {
             if (
                 $sourceIndex -ge $tokens.Count -or
                 $tokens[$sourceIndex].Depth -ne 0 -or
-                -not (Test-SqlUtilityIdentifierToken -Token $tokens[$sourceIndex]) -or
-                ($tokens[$sourceIndex].Kind -eq 'Word' -and $clauseWords -contains $tokens[$sourceIndex].Upper)
+                -not (Test-SqlUtilityAliasToken -Token $tokens[$sourceIndex])
             ) {
                 return New-SqlUtilityInvalidQueryResult -Message 'AS must be followed by a table alias.'
             }
             $sourceIndex++
         }
         else {
-            if (-not (Test-SqlUtilityIdentifierToken -Token $tokens[$sourceIndex])) {
+            if (-not (Test-SqlUtilityAliasToken -Token $tokens[$sourceIndex])) {
                 return New-SqlUtilityInvalidQueryResult -Message 'The table alias is malformed.'
             }
             $sourceIndex++

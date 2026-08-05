@@ -285,6 +285,64 @@ function Write-SqlUtilityStyles {
     }
 }
 
+function ConvertTo-SqlUtilityOoxmlText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Value
+    )
+
+    if ($Value.Length -gt 32767) {
+        throw [System.InvalidOperationException]::new('Excel cells cannot contain more than 32,767 characters.')
+    }
+
+    $builder = [System.Text.StringBuilder]::new($Value.Length)
+    for ($index = 0; $index -lt $Value.Length; $index++) {
+        $character = $Value[$index]
+        if (
+            $character -eq '_' -and
+            ($index + 6) -lt $Value.Length -and
+            ($Value[$index + 1] -eq 'x' -or $Value[$index + 1] -eq 'X') -and
+            [System.Uri]::IsHexDigit($Value[$index + 2]) -and
+            [System.Uri]::IsHexDigit($Value[$index + 3]) -and
+            [System.Uri]::IsHexDigit($Value[$index + 4]) -and
+            [System.Uri]::IsHexDigit($Value[$index + 5]) -and
+            $Value[$index + 6] -eq '_'
+        ) {
+            [void] $builder.Append('_x005F_')
+            continue
+        }
+
+        if ([char]::IsHighSurrogate($character)) {
+            if (($index + 1) -lt $Value.Length -and [char]::IsLowSurrogate($Value[$index + 1])) {
+                [void] $builder.Append($character)
+                $index++
+                [void] $builder.Append($Value[$index])
+            }
+            else {
+                [void] $builder.Append(('_x{0:X4}_' -f [int] $character))
+            }
+            continue
+        }
+        if ([char]::IsLowSurrogate($character)) {
+            [void] $builder.Append(('_x{0:X4}_' -f [int] $character))
+            continue
+        }
+
+        $codeUnit = [int] $character
+        $isValidXmlCharacter = $codeUnit -eq 0x9 -or $codeUnit -eq 0xA -or $codeUnit -eq 0xD -or
+            ($codeUnit -ge 0x20 -and $codeUnit -le 0xD7FF) -or
+            ($codeUnit -ge 0xE000 -and $codeUnit -le 0xFFFD)
+        if ($isValidXmlCharacter) {
+            [void] $builder.Append($character)
+        }
+        else {
+            [void] $builder.Append(('_x{0:X4}_' -f $codeUnit))
+        }
+    }
+
+    return $builder.ToString()
+}
+
 function Write-SqlUtilityInlineStringCell {
     param(
         [System.Xml.XmlWriter] $Writer,
@@ -300,7 +358,7 @@ function Write-SqlUtilityInlineStringCell {
     $Writer.WriteStartElement('is', $script:SqlUtilitySpreadsheetNamespace)
     $Writer.WriteStartElement('t', $script:SqlUtilitySpreadsheetNamespace)
     $Writer.WriteAttributeString('xml', 'space', $script:SqlUtilityXmlNamespace, 'preserve')
-    $Writer.WriteString($Value)
+    $Writer.WriteString((ConvertTo-SqlUtilityOoxmlText -Value $Value))
     $Writer.WriteEndElement()
     $Writer.WriteEndElement()
     $Writer.WriteEndElement()
@@ -329,7 +387,19 @@ function Write-SqlUtilityDataCell {
         return
     }
 
+    if ($Value -is [byte[]]) {
+        $hexadecimal = [System.BitConverter]::ToString($Value).Replace('-', '')
+        Write-SqlUtilityInlineStringCell -Writer $Writer -CellReference $CellReference -Value ('0x' + $hexadecimal)
+        return
+    }
+
     if ($Value -is [datetime]) {
+        if ($Value.Year -lt 100) {
+            $isoText = $Value.ToString('yyyy-MM-ddTHH:mm:ss.fffffff', [Globalization.CultureInfo]::InvariantCulture)
+            Write-SqlUtilityInlineStringCell -Writer $Writer -CellReference $CellReference -Value $isoText
+            return
+        }
+
         $Writer.WriteStartElement('c', $script:SqlUtilitySpreadsheetNamespace)
         $Writer.WriteAttributeString('r', $CellReference)
         $Writer.WriteAttributeString('s', '2')
@@ -366,12 +436,14 @@ function Export-SqlUtilityXlsx {
     $destinationDirectory = [System.IO.Path]::GetDirectoryName($destinationFullPath)
     $destinationFileName = [System.IO.Path]::GetFileName($destinationFullPath)
     $temporaryPath = Join-Path $destinationDirectory ($destinationFileName + '.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $backupPath = Join-Path $destinationDirectory ($destinationFileName + '.' + [guid]::NewGuid().ToString('N') + '.bak')
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $archive = $null
     $worksheetWriter = $null
     $primaryError = $null
     $cleanupError = $null
+    $destinationCommitted = $false
     $state = [pscustomobject]@{
         SchemaWritten = $false
         Columns = @()
@@ -459,7 +531,10 @@ function Export-SqlUtilityXlsx {
             $rowValues = @($Values)
             for ($columnIndex = 0; $columnIndex -lt $state.Columns.Count; $columnIndex++) {
                 $cellReference = (& $convertColumnName ($columnIndex + 1)) + $rowNumber
-                $value = if ($columnIndex -lt $rowValues.Count) { $rowValues[$columnIndex] } else { [DBNull]::Value }
+                $value = [DBNull]::Value
+                if ($columnIndex -lt $rowValues.Count) {
+                    $value = $rowValues[$columnIndex]
+                }
                 & $writeDataCell -Writer $worksheetWriter -CellReference $cellReference -Value $value
             }
             $worksheetWriter.WriteEndElement()
@@ -486,11 +561,12 @@ function Export-SqlUtilityXlsx {
 
         $null = & $shouldContinue
         if ([System.IO.File]::Exists($destinationFullPath)) {
-            [System.IO.File]::Replace($temporaryPath, $destinationFullPath, $null)
+            [System.IO.File]::Replace($temporaryPath, $destinationFullPath, $backupPath)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $destinationFullPath)
         }
+        $destinationCommitted = $true
     }
     catch {
         $primaryError = $_
@@ -517,6 +593,14 @@ function Export-SqlUtilityXlsx {
             if ($null -eq $cleanupError) { $cleanupError = $_ }
         }
         try {
+            if ([System.IO.File]::Exists($backupPath)) {
+                [System.IO.File]::Delete($backupPath)
+            }
+        }
+        catch {
+            if ($null -eq $cleanupError) { $cleanupError = $_ }
+        }
+        try {
             $stopwatch.Stop()
         }
         catch {
@@ -528,6 +612,10 @@ function Export-SqlUtilityXlsx {
         $PSCmdlet.ThrowTerminatingError($primaryError)
     }
     if ($null -ne $cleanupError) {
+        if ($destinationCommitted) {
+            Write-Warning ("The workbook was saved, but a transient file could not be removed: {0}" -f $cleanupError.Exception.Message)
+            return
+        }
         $PSCmdlet.ThrowTerminatingError($cleanupError)
     }
 }

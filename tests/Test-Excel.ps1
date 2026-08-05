@@ -159,6 +159,153 @@ try {
         $archive.Dispose()
     }
 
+    $overwritePath = Join-Path $testRoot 'overwrite.xlsx'
+    $originalOverwriteTable = [System.Data.DataTable]::new('OriginalOverwrite')
+    [void] $originalOverwriteTable.Columns.Add('Value', [string])
+    [void] $originalOverwriteTable.Rows.Add('old value')
+    Export-SqlUtilityXlsx -DestinationPath $overwritePath `
+        -RowSource (New-SqlUtilityDataTableRowSource $originalOverwriteTable) -TimeoutSeconds 30
+
+    $replacementOverwriteTable = [System.Data.DataTable]::new('ReplacementOverwrite')
+    [void] $replacementOverwriteTable.Columns.Add('Value', [string])
+    [void] $replacementOverwriteTable.Rows.Add('new value')
+    Export-SqlUtilityXlsx -DestinationPath $overwritePath `
+        -RowSource (New-SqlUtilityDataTableRowSource $replacementOverwriteTable) -TimeoutSeconds 30
+
+    $overwriteArchive = [System.IO.Compression.ZipFile]::OpenRead($overwritePath)
+    try {
+        $overwriteXml = Get-ZipXmlDocument $overwriteArchive 'xl/worksheets/sheet1.xml'
+        $overwriteNs = New-SpreadsheetNamespaceManager $overwriteXml
+        Assert-Equal 'new value' $overwriteXml.SelectSingleNode('/s:worksheet/s:sheetData/s:row[@r="2"]/s:c[@r="A2"]/s:is/s:t', $overwriteNs).InnerText `
+            'Overwriting an existing workbook commits the replacement workbook'
+    }
+    finally {
+        $overwriteArchive.Dispose()
+    }
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter 'overwrite.xlsx.*.bak' -File).Count `
+        'Successful workbook replacement cleans its unique sibling backup'
+
+    $binaryTable = [System.Data.DataTable]::new('BinaryValues')
+    [void] $binaryTable.Columns.Add('FirstBytes', [byte[]])
+    [void] $binaryTable.Columns.Add('SecondBytes', [byte[]])
+    [void] $binaryTable.Columns.Add('EmptyBytes', [byte[]])
+    $binaryRow = $binaryTable.NewRow()
+    $binaryRow['FirstBytes'] = [byte[]] @(0, 15, 16, 255)
+    $binaryRow['SecondBytes'] = [byte[]] @(161, 178)
+    $binaryRow['EmptyBytes'] = [byte[]] @()
+    [void] $binaryTable.Rows.Add($binaryRow)
+    $binaryPath = Join-Path $testRoot 'binary.xlsx'
+    Export-SqlUtilityXlsx -DestinationPath $binaryPath `
+        -RowSource (New-SqlUtilityDataTableRowSource $binaryTable) -TimeoutSeconds 30
+    $binaryArchive = [System.IO.Compression.ZipFile]::OpenRead($binaryPath)
+    try {
+        $binaryXml = Get-ZipXmlDocument $binaryArchive 'xl/worksheets/sheet1.xml'
+        $binaryNs = New-SpreadsheetNamespaceManager $binaryXml
+        $binaryExpectations = @{ A2 = '0x000F10FF'; B2 = '0xA1B2'; C2 = '0x' }
+        foreach ($cellAddress in $binaryExpectations.Keys) {
+            $binaryText = $binaryXml.SelectSingleNode("/s:worksheet/s:sheetData/s:row/s:c[@r='$cellAddress']/s:is/s:t", $binaryNs).InnerText
+            Assert-Equal $binaryExpectations[$cellAddress] $binaryText `
+                "Byte-array cell $cellAddress uses lossless uppercase hexadecimal text"
+        }
+    }
+    finally {
+        $binaryArchive.Dispose()
+    }
+
+    $earlyDate = [datetime]::new(99, 12, 31, 23, 59, 58, [DateTimeKind]::Unspecified)
+    $earlyDateTable = [System.Data.DataTable]::new('EarlyDate')
+    [void] $earlyDateTable.Columns.Add('OccurredAt', [datetime])
+    [void] $earlyDateTable.Rows.Add($earlyDate)
+    $earlyDatePath = Join-Path $testRoot 'early-date.xlsx'
+    Export-SqlUtilityXlsx -DestinationPath $earlyDatePath `
+        -RowSource (New-SqlUtilityDataTableRowSource $earlyDateTable) -TimeoutSeconds 30
+    $earlyDateArchive = [System.IO.Compression.ZipFile]::OpenRead($earlyDatePath)
+    try {
+        $earlyDateXml = Get-ZipXmlDocument $earlyDateArchive 'xl/worksheets/sheet1.xml'
+        $earlyDateNs = New-SpreadsheetNamespaceManager $earlyDateXml
+        $earlyDateCell = $earlyDateXml.SelectSingleNode('/s:worksheet/s:sheetData/s:row[@r="2"]/s:c[@r="A2"]', $earlyDateNs)
+        Assert-Equal 'inlineStr' $earlyDateCell.GetAttribute('t') 'A pre-0100 date is stored as invariant ISO text'
+        Assert-Equal '0099-12-31T23:59:58.0000000' $earlyDateCell.SelectSingleNode('s:is/s:t', $earlyDateNs).InnerText `
+            'A pre-0100 date keeps its complete invariant value'
+    }
+    finally {
+        $earlyDateArchive.Dispose()
+    }
+
+    $textBoundaryTable = [System.Data.DataTable]::new('TextBoundaries')
+    [void] $textBoundaryTable.Columns.Add('LiteralEscape', [string])
+    [void] $textBoundaryTable.Columns.Add('MaximumText', [string])
+    [void] $textBoundaryTable.Rows.Add('_x0041_', ('x' * 32767))
+    $textBoundaryPath = Join-Path $testRoot 'text-boundaries.xlsx'
+    Export-SqlUtilityXlsx -DestinationPath $textBoundaryPath `
+        -RowSource (New-SqlUtilityDataTableRowSource $textBoundaryTable) -TimeoutSeconds 30
+    $textBoundaryArchive = [System.IO.Compression.ZipFile]::OpenRead($textBoundaryPath)
+    try {
+        $textBoundaryXml = Get-ZipXmlDocument $textBoundaryArchive 'xl/worksheets/sheet1.xml'
+        $textBoundaryNs = New-SpreadsheetNamespaceManager $textBoundaryXml
+        $literalEscapeText = $textBoundaryXml.SelectSingleNode('/s:worksheet/s:sheetData/s:row[@r="2"]/s:c[@r="A2"]/s:is/s:t', $textBoundaryNs).InnerText
+        $maximumText = $textBoundaryXml.SelectSingleNode('/s:worksheet/s:sheetData/s:row[@r="2"]/s:c[@r="B2"]/s:is/s:t', $textBoundaryNs).InnerText
+        Assert-Equal '_x005F_x0041_' $literalEscapeText 'A literal OOXML escape-shaped sequence remains literal in Excel'
+        Assert-Equal 32767 $maximumText.Length 'A text value at the Excel cell limit is exported in full'
+    }
+    finally {
+        $textBoundaryArchive.Dispose()
+    }
+
+    $invalidControlTable = [System.Data.DataTable]::new('InvalidControl')
+    [void] $invalidControlTable.Columns.Add('Value', [string])
+    [void] $invalidControlTable.Rows.Add("before$([char] 1)after")
+    $invalidControlPath = Join-Path $testRoot 'invalid-control.xlsx'
+    $invalidControlError = $null
+    try {
+        Export-SqlUtilityXlsx -DestinationPath $invalidControlPath `
+            -RowSource (New-SqlUtilityDataTableRowSource $invalidControlTable) -TimeoutSeconds 30
+    }
+    catch {
+        $invalidControlError = $_
+    }
+    Assert-True ($null -eq $invalidControlError) 'An XML-invalid control character is safely exported'
+    if ($null -eq $invalidControlError) {
+        $invalidControlArchive = [System.IO.Compression.ZipFile]::OpenRead($invalidControlPath)
+        try {
+            $invalidControlXml = Get-ZipXmlDocument $invalidControlArchive 'xl/worksheets/sheet1.xml'
+            $invalidControlNs = New-SpreadsheetNamespaceManager $invalidControlXml
+            $invalidControlText = $invalidControlXml.SelectSingleNode('/s:worksheet/s:sheetData/s:row[@r="2"]/s:c[@r="A2"]/s:is/s:t', $invalidControlNs).InnerText
+            Assert-Equal 'before_x0001_after' $invalidControlText 'An XML-invalid control uses the OOXML escape convention'
+        }
+        finally {
+            $invalidControlArchive.Dispose()
+        }
+    }
+
+    $oversizedTextTable = [System.Data.DataTable]::new('OversizedText')
+    [void] $oversizedTextTable.Columns.Add('Value', [string])
+    [void] $oversizedTextTable.Rows.Add(('z' * 32768))
+    $oversizedTextPath = Join-Path $testRoot 'oversized-text.xlsx'
+    $oversizedPriorBytes = [byte[]] @(79, 76, 68)
+    [System.IO.File]::WriteAllBytes($oversizedTextPath, $oversizedPriorBytes)
+    $oversizedTextError = $null
+    try {
+        Export-SqlUtilityXlsx -DestinationPath $oversizedTextPath `
+            -RowSource (New-SqlUtilityDataTableRowSource $oversizedTextTable) -TimeoutSeconds 30
+    }
+    catch {
+        $oversizedTextError = $_.Exception
+    }
+    Assert-True ($null -ne $oversizedTextError) 'A text value above the Excel cell limit is rejected'
+    if ($null -ne $oversizedTextError) {
+        Assert-Equal 'System.InvalidOperationException' $oversizedTextError.GetType().FullName `
+            'An oversized text value reports a stable validation exception'
+        Assert-True ($oversizedTextError.Message -match '32,767') `
+            'An oversized text value reports the Excel cell limit clearly'
+    }
+    Assert-Equal ($oversizedPriorBytes -join ',') ([System.IO.File]::ReadAllBytes($oversizedTextPath) -join ',') `
+        'An oversized text failure preserves the existing destination byte-for-byte'
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter 'oversized-text.xlsx.*.tmp' -File).Count `
+        'An oversized text failure cleans its temporary workbook'
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter 'oversized-text.xlsx.*.bak' -File).Count `
+        'An oversized text failure leaves no backup sibling'
+
     $emptyTable = [System.Data.DataTable]::new('Empty')
     [void] $emptyTable.Columns.Add('Id', [int])
     [void] $emptyTable.Columns.Add('Name', [string])

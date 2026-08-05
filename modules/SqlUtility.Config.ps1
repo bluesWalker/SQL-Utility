@@ -163,11 +163,31 @@ function Write-SqlUtilityConfig {
     }
 
     $temporaryPath = Join-Path $directory ('.SqlUtility.config.{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    $backupPath = Join-Path $directory ('.SqlUtility.config.{0}.bak' -f [guid]::NewGuid().ToString('N'))
     try {
         $json = $validated | ConvertTo-Json -Depth 4
         [System.IO.File]::WriteAllText($temporaryPath, $json, [System.Text.UTF8Encoding]::new($false))
         if ([System.IO.File]::Exists($Path)) {
-            [System.IO.File]::Replace($temporaryPath, $Path, $null)
+            $replacementError = $null
+            try {
+                [System.IO.File]::Replace($temporaryPath, $Path, $backupPath)
+            }
+            catch {
+                $replacementError = $_
+                throw
+            }
+            finally {
+                if ([System.IO.File]::Exists($backupPath)) {
+                    try {
+                        [System.IO.File]::Delete($backupPath)
+                    }
+                    catch {
+                        if ($null -eq $replacementError) {
+                            throw
+                        }
+                    }
+                }
+            }
         }
         else {
             [System.IO.File]::Move($temporaryPath, $Path)

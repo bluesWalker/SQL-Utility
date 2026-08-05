@@ -35,6 +35,15 @@ try {
     $loaded = Read-SqlUtilityConfig -Path $roundTripPath
     Assert-Equal ($saved | ConvertTo-Json -Depth 4) ($loaded | ConvertTo-Json -Depth 4) 'Config round-trips'
 
+    $replacementConfig = ConvertTo-SqlUtilityValidatedConfig -InputObject $saved
+    $replacementConfig.unorderedRowLimit = 1500
+    $replaced = Write-SqlUtilityConfig -Path $roundTripPath -Config $replacementConfig
+    $reloadedReplacement = Read-SqlUtilityConfig -Path $roundTripPath
+    Assert-Equal 1500 $replaced.unorderedRowLimit 'Existing config replacement returns updated settings'
+    Assert-Equal 1500 $reloadedReplacement.unorderedRowLimit 'Existing config replacement persists updated settings'
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.tmp' -File).Count 'Successful replacement leaves no temporary sibling'
+    Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File).Count 'Successful replacement leaves no backup sibling'
+
     $readLock = [System.IO.File]::Open($roundTripPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
     try {
         Assert-Throws { Read-SqlUtilityConfig -Path $roundTripPath } $null 'Locked configuration read propagates its I/O error'

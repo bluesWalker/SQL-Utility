@@ -579,14 +579,16 @@ function Invoke-SqlUtilityExportAction {
         return
     }
 
-    $promptSavePath = $state.Services['PromptSavePath']
-    $destinationPath = & $promptSavePath
-    if ([string]::IsNullOrWhiteSpace([string] $destinationPath)) {
-        return
-    }
-
-    Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Exporting result...'
+    $busyStarted = $false
     try {
+        $promptSavePath = $state.Services['PromptSavePath']
+        $destinationPath = & $promptSavePath
+        if ([string]::IsNullOrWhiteSpace([string] $destinationPath)) {
+            return
+        }
+
+        Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Exporting result...'
+        $busyStarted = $true
         $exportResult = $state.Services['ExportResult']
         & $exportResult $state ([string] $destinationPath)
         Show-SqlUtilityMessage -State $state -Text 'Export completed.' -Caption 'Export' -Icon 'Information'
@@ -597,7 +599,9 @@ function Invoke-SqlUtilityExportAction {
             -Caption 'Export Error' -Icon 'Error'
     }
     finally {
-        Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+        if ($busyStarted) {
+            Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+        }
     }
 }
 

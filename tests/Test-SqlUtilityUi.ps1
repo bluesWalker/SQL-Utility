@@ -27,7 +27,9 @@ function New-TestServices {
         TestError = $null
         WriteError = $null
         ExecuteError = $null
+        LocalPageError = $null
         ExportError = $null
+        PromptError = $null
         ConfirmResult = $true
         WriteToDisk = $false
         ValidationResult = [pscustomobject][ordered]@{
@@ -111,6 +113,9 @@ function New-TestServices {
                 IsComplete = $IsComplete
                 IsTruncated = $IsTruncated
             })
+            if ($null -ne $recorder.LocalPageError) {
+                throw [System.InvalidOperationException]::new([string] $recorder.LocalPageError)
+            }
             return Get-SqlUtilityLocalPage -CachedData $CachedData -PageNumber $PageNumber `
                 -IsComplete $IsComplete -IsTruncated $IsTruncated
         }.GetNewClosure()
@@ -136,6 +141,9 @@ function New-TestServices {
         }.GetNewClosure()
         PromptSavePath = {
             $recorder.PromptCalls++
+            if ($null -ne $recorder.PromptError) {
+                throw [System.IO.IOException]::new([string] $recorder.PromptError)
+            }
             return $recorder.PromptPath
         }.GetNewClosure()
         ShowDialog = {
@@ -208,6 +216,20 @@ function Enter-TestWorkspace($Form) {
     $Form.Tag.ActiveDatabase = 'QueryDatabase'
     Set-SqlUtilityStage -Form $Form -Stage 'Workspace'
     [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Assert-TestQueryFailureState($Form, $Recorder, [string] $Prefix) {
+    Assert-Equal $true ($null -eq $Form.Tag.CurrentResult) "$Prefix clears current result"
+    Assert-Equal 0 $Form.Tag.CurrentPage "$Prefix clears page number"
+    Assert-Equal $true ($null -eq (Get-TestControl $Form 'ResultsGrid').DataSource) "$Prefix clears grid"
+    Assert-Equal $false (Get-TestControl $Form 'PreviousPageButton').Enabled "$Prefix disables Previous"
+    Assert-Equal $false (Get-TestControl $Form 'NextPageButton').Enabled "$Prefix disables Next"
+    Assert-Equal $false (Get-TestControl $Form 'ExportButton').Enabled "$Prefix disables Export"
+    Assert-Equal $false $Form.Tag.IsBusy "$Prefix restores busy state"
+    Assert-Equal $true $Form.Enabled "$Prefix restores form buttons"
+    Assert-Equal $true (Get-TestControl $Form 'ExecuteButton').Enabled "$Prefix restores Execute button"
+    Assert-Equal $false $Form.UseWaitCursor "$Prefix restores cursor"
+    Assert-Equal 1 @($Recorder.Messages | Where-Object Icon -eq 'Error').Count "$Prefix shows one error popup"
 }
 
 $requiredControlNames = @(
@@ -628,6 +650,65 @@ finally {
     $errorForm.Dispose()
 }
 
+# Ordered page reexecution failure clears every result control and restores the interactive form.
+$orderedPageErrorHarness = New-TestServices
+$orderedPageErrorHarness.Recorder.OrderedResults[1] = New-TestPageResult `
+    -Data (New-TestDataTable -RowCount 500) -PageNumber 1 -HasNext $true
+$orderedPageErrorHarness.Recorder.OrderedResults[2] = New-TestPageResult `
+    -Data (New-TestDataTable -RowCount 500) -PageNumber 2 -HasPrevious $true -HasNext $true
+$orderedPageErrorForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $orderedPageErrorHarness.Services
+try {
+    Show-TestForm $orderedPageErrorForm
+    Enter-TestWorkspace $orderedPageErrorForm
+    (Get-TestControl $orderedPageErrorForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $orderedPageErrorForm 'ExecuteButton').PerformClick()
+    (Get-TestControl $orderedPageErrorForm 'NextPageButton').PerformClick()
+    $orderedPageErrorHarness.Recorder.ExecuteError = 'ordered page timed out'
+    (Get-TestControl $orderedPageErrorForm 'NextPageButton').PerformClick()
+
+    Assert-Equal 3 $orderedPageErrorHarness.Recorder.OrderedCalls.Count 'Ordered page failure occurs on reexecution call'
+    Assert-Equal 3 $orderedPageErrorHarness.Recorder.OrderedCalls[2].PageNumber 'Ordered page failure requested page three'
+    Assert-TestQueryFailureState $orderedPageErrorForm $orderedPageErrorHarness.Recorder 'Ordered page failure'
+}
+finally {
+    $orderedPageErrorForm.Close()
+    $orderedPageErrorForm.Dispose()
+}
+
+# Unordered local-page failure clears every result control and restores the interactive form without another SQL call.
+$localPageErrorHarness = New-TestServices
+$localPageErrorHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
+    IsValid = $true
+    ErrorMessage = ''
+    NormalizedSql = 'SELECT Id FROM dbo.Items'
+    TableIdentifier = 'dbo.Items'
+    HasOrderBy = $false
+}
+$localPageErrorConfig = New-TestConfig
+$localPageErrorConfig.unorderedRowLimit = 1500
+$localPageErrorCache = New-TestDataTable -RowCount 1200
+$localPageErrorHarness.Recorder.UnorderedResult = Get-SqlUtilityLocalPage `
+    -CachedData $localPageErrorCache -PageNumber 1 -IsComplete $true -IsTruncated $false
+$localPageErrorForm = New-SqlUtilityMainForm -Config $localPageErrorConfig -ConfigPath 'C:\test\config.json' -Services $localPageErrorHarness.Services
+try {
+    Show-TestForm $localPageErrorForm
+    Enter-TestWorkspace $localPageErrorForm
+    (Get-TestControl $localPageErrorForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items'
+    (Get-TestControl $localPageErrorForm 'ExecuteButton').PerformClick()
+    (Get-TestControl $localPageErrorForm 'NextPageButton').PerformClick()
+    $localPageErrorHarness.Recorder.LocalPageError = 'local page unavailable'
+    (Get-TestControl $localPageErrorForm 'NextPageButton').PerformClick()
+
+    Assert-Equal 1 $localPageErrorHarness.Recorder.UnorderedCalls.Count 'Local-page failure never repeats unordered SQL execution'
+    Assert-Equal 2 $localPageErrorHarness.Recorder.LocalPageCalls.Count 'Local-page failure occurs in local-page service'
+    Assert-Equal 3 $localPageErrorHarness.Recorder.LocalPageCalls[1].PageNumber 'Local-page failure requested page three'
+    Assert-TestQueryFailureState $localPageErrorForm $localPageErrorHarness.Recorder 'Local-page failure'
+}
+finally {
+    $localPageErrorForm.Close()
+    $localPageErrorForm.Dispose()
+}
+
 # Export cancellation is inert; export failures report errors without clearing a valid result.
 $exportHarness = New-TestServices
 $exportHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 2) -PageNumber 1
@@ -656,6 +737,34 @@ try {
 finally {
     $exportForm.Close()
     $exportForm.Dispose()
+}
+
+# Save-path prompt failures are reported as export failures and never invoke the result exporter.
+$promptErrorHarness = New-TestServices
+$promptErrorHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 2) -PageNumber 1
+$promptErrorHarness.Recorder.PromptError = 'save dialog unavailable'
+$promptErrorForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $promptErrorHarness.Services
+try {
+    Show-TestForm $promptErrorForm
+    Enter-TestWorkspace $promptErrorForm
+    (Get-TestControl $promptErrorForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $promptErrorForm 'ExecuteButton').PerformClick()
+    $promptFailureResult = $promptErrorForm.Tag.CurrentResult
+    (Get-TestControl $promptErrorForm 'ExportButton').PerformClick()
+
+    Assert-Equal 1 $promptErrorHarness.Recorder.PromptCalls 'Prompt failure invokes save-path service once'
+    Assert-Equal 0 $promptErrorHarness.Recorder.ExportCalls.Count 'Prompt failure never invokes result exporter'
+    Assert-Equal 1 @($promptErrorHarness.Recorder.Messages | Where-Object Icon -eq 'Error').Count 'Prompt failure shows one export error popup'
+    Assert-True ($promptErrorHarness.Recorder.Messages[0].Text -match 'save dialog unavailable') 'Prompt failure popup includes the prompt error'
+    Assert-Equal $promptFailureResult $promptErrorForm.Tag.CurrentResult 'Prompt failure preserves valid result state'
+    Assert-Equal $false $promptErrorForm.Tag.IsBusy 'Prompt failure leaves busy state clear'
+    Assert-Equal $true $promptErrorForm.Enabled 'Prompt failure leaves form buttons enabled'
+    Assert-Equal $true (Get-TestControl $promptErrorForm 'ExportButton').Enabled 'Prompt failure leaves Export enabled for retry'
+    Assert-Equal $false $promptErrorForm.UseWaitCursor 'Prompt failure leaves cursor restored'
+}
+finally {
+    $promptErrorForm.Close()
+    $promptErrorForm.Dispose()
 }
 
 # The production export workflow composes ordered SQL streaming and unordered cached rows through neutral callbacks.

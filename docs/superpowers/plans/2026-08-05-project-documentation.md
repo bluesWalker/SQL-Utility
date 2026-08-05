@@ -110,7 +110,7 @@ Populate the sections as follows:
 - **Excel Export:** Explain ordered export streams a fresh execution of the exact validated snapshot; complete unordered export uses all cached rows. Document bold filtered frozen header, neutral typed cells, null handling, formula-literal safety, `byte[]` uppercase `0x` hex, OOXML text escaping, early dates as ISO text, 32,767-character cells, 1,048,575 data-row limit, timeout, and atomic destination replacement with a non-null sibling backup. State incomplete/truncated unordered results cannot be exported as complete.
 - **Security and Data Boundaries:** State Windows integrated authentication only, no credentials, connection strings via `SqlConnectionStringBuilder`, parameterized paging values, in-memory query/result state, app-local JSON writes, user-selected Excel writes, transient siblings, and SQL as the only automatic network protocol.
 - **Error Handling and Runtime Model:** Cover synchronous busy state, temporary UI unresponsiveness, configured command/export timeout, fixed connection timeout, state clearing after query/page failure, destination preservation on export failure, and confirmations for delete/change/reset/overwrite.
-- **Testing:** List the seven files under `tests/` by responsibility. Provide focused commands and the aggregate command:
+- **Testing:** List the eight files under `tests/` by responsibility. Provide focused commands and the aggregate command:
 
   ```powershell
   powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-QueryPolicy.ps1

@@ -19,6 +19,30 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Join-Path $PSScriptRoot 'SqlUtility.config.json'
 }
 
+function Invoke-SqlUtilityExportWorkflow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $State,
+        [Parameter(Mandatory = $true)][string] $DestinationPath
+    )
+
+    if ($State.ExecutedQuery.HasOrderBy) {
+        $rowSource = {
+            param($OnSchema, $OnRow, $ShouldContinue)
+            Invoke-SqlUtilityOrderedRowStream -Server $State.ActiveServer `
+                -Database $State.ActiveDatabase -Sql $State.ExecutedQuery.NormalizedSql `
+                -CommandTimeoutSeconds $State.Config.queryExportTimeoutSeconds `
+                -OnSchema $OnSchema -OnRow $OnRow -ShouldContinue $ShouldContinue
+        }.GetNewClosure()
+    }
+    else {
+        $rowSource = New-SqlUtilityDataTableRowSource -DataTable $State.CurrentResult.CachedData
+    }
+
+    Export-SqlUtilityXlsx -DestinationPath $DestinationPath -RowSource $rowSource `
+        -TimeoutSeconds $State.Config.queryExportTimeoutSeconds
+}
+
 function New-SqlUtilityDefaultServices {
     [CmdletBinding()]
     param()
@@ -60,6 +84,45 @@ function New-SqlUtilityDefaultServices {
             )
             return $answer -eq [System.Windows.Forms.DialogResult]::Yes
         }
+        ValidateQuery = {
+            param($Sql)
+            return Test-SqlUtilityQuery -Sql $Sql
+        }
+        ExecuteOrderedPage = {
+            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds)
+            return Invoke-SqlUtilityOrderedPage -Server $Server -Database $Database -Sql $Sql `
+                -PageNumber $PageNumber -CommandTimeoutSeconds $TimeoutSeconds
+        }
+        ExecuteUnordered = {
+            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds)
+            return Invoke-SqlUtilityUnorderedQuery -Server $Server -Database $Database -Sql $Sql `
+                -RowLimit $RowLimit -CommandTimeoutSeconds $TimeoutSeconds
+        }
+        GetLocalPage = {
+            param($CachedData, $PageNumber, $IsComplete, $IsTruncated)
+            return Get-SqlUtilityLocalPage -CachedData $CachedData -PageNumber $PageNumber `
+                -IsComplete $IsComplete -IsTruncated $IsTruncated
+        }
+        ExportResult = {
+            param($State, $DestinationPath)
+            Invoke-SqlUtilityExportWorkflow -State $State -DestinationPath $DestinationPath
+        }
+        PromptSavePath = {
+            $dialog = [System.Windows.Forms.SaveFileDialog]::new()
+            try {
+                $dialog.Filter = 'Excel Workbook (*.xlsx)|*.xlsx'
+                $dialog.DefaultExt = 'xlsx'
+                $dialog.AddExtension = $true
+                $dialog.OverwritePrompt = $true
+                if ($dialog.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) {
+                    return $null
+                }
+                return [string] $dialog.FileName
+            }
+            finally {
+                $dialog.Dispose()
+            }
+        }
     }
 }
 
@@ -69,7 +132,10 @@ function Assert-SqlUtilityServices {
         [Parameter(Mandatory = $true)][hashtable] $Services
     )
 
-    foreach ($serviceName in @('TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm')) {
+    foreach ($serviceName in @(
+        'TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm', 'ValidateQuery',
+        'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'ExportResult', 'PromptSavePath'
+    )) {
         if (-not $Services.ContainsKey($serviceName) -or $Services[$serviceName] -isnot [scriptblock]) {
             throw [System.ArgumentException]::new("Services must contain a '$serviceName' scriptblock.")
         }
@@ -327,26 +393,17 @@ function Invoke-SqlUtilitySaveSettings {
     }
 }
 
-function Reset-SqlUtilityWorkspaceState {
+function Clear-SqlUtilityQueryResult {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
     )
 
     $state = $Form.Tag
-    $state.ActiveServer = ''
-    $state.ActiveDatabase = ''
     $state.ExecutedQuery = $null
     $state.CurrentResult = $null
     $state.CurrentPage = 0
     $state.IsQueryStale = $false
-
-    foreach ($textBoxName in @('ServerTextBox', 'DatabaseTextBox', 'SqlEditor')) {
-        $textBox = Get-SqlUtilityNamedControl -Root $Form -Name $textBoxName
-        if ($null -ne $textBox) {
-            $textBox.Text = ''
-        }
-    }
 
     $resultsGrid = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultsGrid'
     if ($null -ne $resultsGrid) {
@@ -364,6 +421,204 @@ function Reset-SqlUtilityWorkspaceState {
     if ($null -ne $pageStatus) {
         $pageStatus.Text = ''
     }
+}
+
+function Show-SqlUtilityPage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form,
+        [Parameter(Mandatory = $true)] $PageResult
+    )
+
+    $state = $Form.Tag
+    $resultsGrid = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultsGrid'
+    $previousButton = Get-SqlUtilityNamedControl -Root $Form -Name 'PreviousPageButton'
+    $nextButton = Get-SqlUtilityNamedControl -Root $Form -Name 'NextPageButton'
+    $exportButton = Get-SqlUtilityNamedControl -Root $Form -Name 'ExportButton'
+    $pageStatus = Get-SqlUtilityNamedControl -Root $Form -Name 'PageStatusLabel'
+
+    $resultsGrid.DataSource = $null
+    $resultsGrid.Columns.Clear()
+    $resultsGrid.AutoGenerateColumns = $true
+    $resultsGrid.DataSource = $PageResult.Data
+    $previousButton.Enabled = (-not $state.IsQueryStale) -and [bool] $PageResult.HasPrevious
+    $nextButton.Enabled = (-not $state.IsQueryStale) -and [bool] $PageResult.HasNext
+    $pageStatus.Text = 'Page {0} - {1} rows' -f $PageResult.PageNumber, $PageResult.DisplayedRowCount
+
+    $canExport = $false
+    if (-not $state.IsQueryStale -and $null -ne $state.ExecutedQuery) {
+        $canExport = [bool] $state.ExecutedQuery.HasOrderBy -or `
+            ([bool] $PageResult.IsComplete -and -not [bool] $PageResult.IsTruncated)
+    }
+    $exportButton.Enabled = $canExport
+
+    foreach ($column in $resultsGrid.Columns) {
+        $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells
+        $resultsGrid.AutoResizeColumn($column.Index, [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells)
+        $width = [Math]::Min(200, $column.Width)
+        $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
+        $column.Width = $width
+    }
+}
+
+function Invoke-SqlUtilityQueryAction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
+    )
+
+    $state = $Form.Tag
+    if ($state.IsBusy) {
+        return
+    }
+
+    $sqlEditor = Get-SqlUtilityNamedControl -Root $Form -Name 'SqlEditor'
+    $editorSql = [string] $sqlEditor.Text
+    Clear-SqlUtilityQueryResult -Form $Form
+    Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Executing query...'
+    try {
+        $validateQuery = $state.Services['ValidateQuery']
+        $validation = & $validateQuery $editorSql
+        if (-not [bool] $validation.IsValid) {
+            Show-SqlUtilityMessage -State $state -Text ([string] $validation.ErrorMessage) `
+                -Caption 'Query Validation' -Icon 'Warning'
+            return
+        }
+
+        $snapshot = [pscustomobject][ordered]@{
+            OriginalEditorSql = $editorSql
+            NormalizedSql = [string] $validation.NormalizedSql
+            HasOrderBy = [bool] $validation.HasOrderBy
+        }
+        if ($snapshot.HasOrderBy) {
+            $executeOrderedPage = $state.Services['ExecuteOrderedPage']
+            $pageResult = & $executeOrderedPage $state.ActiveServer $state.ActiveDatabase `
+                $snapshot.NormalizedSql 1 $state.Config.queryExportTimeoutSeconds
+        }
+        else {
+            $executeUnordered = $state.Services['ExecuteUnordered']
+            $pageResult = & $executeUnordered $state.ActiveServer $state.ActiveDatabase `
+                $snapshot.NormalizedSql $state.Config.unorderedRowLimit $state.Config.queryExportTimeoutSeconds
+        }
+
+        $state.ExecutedQuery = $snapshot
+        $state.CurrentResult = $pageResult
+        $state.CurrentPage = [int] $pageResult.PageNumber
+        $state.IsQueryStale = $false
+        Show-SqlUtilityPage -Form $Form -PageResult $pageResult
+        if ([bool] $pageResult.IsTruncated) {
+            Show-SqlUtilityMessage -State $state `
+                -Text 'The result reached the configured maximum. Add ORDER BY for complete server-side paging.' `
+                -Caption 'Result Limit Reached' -Icon 'Warning'
+        }
+    }
+    catch {
+        Clear-SqlUtilityQueryResult -Form $Form
+        Show-SqlUtilityMessage -State $state `
+            -Text ("Query failed.`r`n`r`n{0}" -f $_.Exception.Message) `
+            -Caption 'Query Error' -Icon 'Error'
+    }
+    finally {
+        Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+    }
+}
+
+function Invoke-SqlUtilityPageAction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form,
+        [Parameter(Mandatory = $true)][ValidateSet(-1, 1)][int] $PageDelta
+    )
+
+    $state = $Form.Tag
+    if ($state.IsBusy -or $state.IsQueryStale -or $null -eq $state.ExecutedQuery -or $null -eq $state.CurrentResult) {
+        return
+    }
+
+    $targetPage = $state.CurrentPage + $PageDelta
+    if ($targetPage -lt 1) {
+        return
+    }
+
+    Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Loading page...'
+    try {
+        if ([bool] $state.ExecutedQuery.HasOrderBy) {
+            $executeOrderedPage = $state.Services['ExecuteOrderedPage']
+            $pageResult = & $executeOrderedPage $state.ActiveServer $state.ActiveDatabase `
+                $state.ExecutedQuery.NormalizedSql $targetPage $state.Config.queryExportTimeoutSeconds
+        }
+        else {
+            $getLocalPage = $state.Services['GetLocalPage']
+            $pageResult = & $getLocalPage $state.CurrentResult.CachedData $targetPage `
+                $state.CurrentResult.IsComplete $state.CurrentResult.IsTruncated
+        }
+
+        $state.CurrentResult = $pageResult
+        $state.CurrentPage = [int] $pageResult.PageNumber
+        Show-SqlUtilityPage -Form $Form -PageResult $pageResult
+    }
+    catch {
+        Clear-SqlUtilityQueryResult -Form $Form
+        Show-SqlUtilityMessage -State $state `
+            -Text ("Query failed.`r`n`r`n{0}" -f $_.Exception.Message) `
+            -Caption 'Query Error' -Icon 'Error'
+    }
+    finally {
+        Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+    }
+}
+
+function Invoke-SqlUtilityExportAction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
+    )
+
+    $state = $Form.Tag
+    if ($state.IsBusy -or $state.IsQueryStale -or $null -eq $state.CurrentResult -or $null -eq $state.ExecutedQuery) {
+        return
+    }
+
+    $promptSavePath = $state.Services['PromptSavePath']
+    $destinationPath = & $promptSavePath
+    if ([string]::IsNullOrWhiteSpace([string] $destinationPath)) {
+        return
+    }
+
+    Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Exporting result...'
+    try {
+        $exportResult = $state.Services['ExportResult']
+        & $exportResult $state ([string] $destinationPath)
+        Show-SqlUtilityMessage -State $state -Text 'Export completed.' -Caption 'Export' -Icon 'Information'
+    }
+    catch {
+        Show-SqlUtilityMessage -State $state `
+            -Text ("Export failed.`r`n`r`n{0}" -f $_.Exception.Message) `
+            -Caption 'Export Error' -Icon 'Error'
+    }
+    finally {
+        Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+    }
+}
+
+function Reset-SqlUtilityWorkspaceState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
+    )
+
+    $state = $Form.Tag
+    $state.ActiveServer = ''
+    $state.ActiveDatabase = ''
+    Clear-SqlUtilityQueryResult -Form $Form
+
+    foreach ($textBoxName in @('ServerTextBox', 'DatabaseTextBox', 'SqlEditor')) {
+        $textBox = Get-SqlUtilityNamedControl -Root $Form -Name $textBoxName
+        if ($null -ne $textBox) {
+            $textBox.Text = ''
+        }
+    }
+
 }
 
 function Invoke-SqlUtilityChangeConnection {
@@ -561,11 +816,87 @@ function New-SqlUtilityMainForm {
     $queryTab.UseVisualStyleBackColor = $true
     [void] $workspaceTabs.TabPages.Add($queryTab)
 
-    $queryPlaceholder = [System.Windows.Forms.Label]::new()
-    $queryPlaceholder.Text = 'Query controls are added in the next stage.'
-    $queryPlaceholder.AutoSize = $true
-    $queryPlaceholder.Location = [System.Drawing.Point]::new(16, 18)
-    $queryTab.Controls.Add($queryPlaceholder)
+    $querySplit = [System.Windows.Forms.SplitContainer]::new()
+    $querySplit.Name = 'QuerySplitContainer'
+    $querySplit.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $querySplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
+    $querySplit.SplitterDistance = 205
+    $querySplit.Panel1MinSize = 150
+    $querySplit.Panel2MinSize = 120
+    $queryTab.Controls.Add($querySplit)
+
+    $queryActionPanel = [System.Windows.Forms.Panel]::new()
+    $queryActionPanel.Dock = [System.Windows.Forms.DockStyle]::Bottom
+    $queryActionPanel.Height = 64
+    $querySplit.Panel1.Controls.Add($queryActionPanel)
+
+    $executeButton = [System.Windows.Forms.Button]::new()
+    $executeButton.Name = 'ExecuteButton'
+    $executeButton.Text = 'Execute'
+    $executeButton.AutoSize = $true
+    $executeButton.Location = [System.Drawing.Point]::new(8, 5)
+    $queryActionPanel.Controls.Add($executeButton)
+
+    $exportButton = [System.Windows.Forms.Button]::new()
+    $exportButton.Name = 'ExportButton'
+    $exportButton.Text = 'Export to Excel'
+    $exportButton.AutoSize = $true
+    $exportButton.Enabled = $false
+    $exportButton.Location = [System.Drawing.Point]::new(96, 5)
+    $queryActionPanel.Controls.Add($exportButton)
+
+    $pagingHelp = [System.Windows.Forms.Label]::new()
+    $pagingHelp.Text = 'Paging requires ORDER BY on stable, preferably unique columns.'
+    $pagingHelp.AutoSize = $true
+    $pagingHelp.Location = [System.Drawing.Point]::new(225, 10)
+    $queryActionPanel.Controls.Add($pagingHelp)
+
+    $previousPageButton = [System.Windows.Forms.Button]::new()
+    $previousPageButton.Name = 'PreviousPageButton'
+    $previousPageButton.Text = 'Previous'
+    $previousPageButton.AutoSize = $true
+    $previousPageButton.Enabled = $false
+    $previousPageButton.Location = [System.Drawing.Point]::new(8, 35)
+    $queryActionPanel.Controls.Add($previousPageButton)
+
+    $nextPageButton = [System.Windows.Forms.Button]::new()
+    $nextPageButton.Name = 'NextPageButton'
+    $nextPageButton.Text = 'Next'
+    $nextPageButton.AutoSize = $true
+    $nextPageButton.Enabled = $false
+    $nextPageButton.Location = [System.Drawing.Point]::new(96, 35)
+    $queryActionPanel.Controls.Add($nextPageButton)
+
+    $pageStatusLabel = [System.Windows.Forms.Label]::new()
+    $pageStatusLabel.Name = 'PageStatusLabel'
+    $pageStatusLabel.Text = ''
+    $pageStatusLabel.AutoSize = $true
+    $pageStatusLabel.Location = [System.Drawing.Point]::new(175, 40)
+    $queryActionPanel.Controls.Add($pageStatusLabel)
+
+    $sqlEditor = [System.Windows.Forms.TextBox]::new()
+    $sqlEditor.Name = 'SqlEditor'
+    $sqlEditor.Multiline = $true
+    $sqlEditor.AcceptsReturn = $true
+    $sqlEditor.AcceptsTab = $true
+    $sqlEditor.ScrollBars = [System.Windows.Forms.ScrollBars]::Both
+    $sqlEditor.WordWrap = $false
+    $sqlEditor.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $sqlEditor.Font = [System.Drawing.Font]::new('Consolas', 10)
+    $querySplit.Panel1.Controls.Add($sqlEditor)
+    $sqlEditor.BringToFront()
+
+    $resultsGrid = [System.Windows.Forms.DataGridView]::new()
+    $resultsGrid.Name = 'ResultsGrid'
+    $resultsGrid.Dock = [System.Windows.Forms.DockStyle]::Fill
+    $resultsGrid.ReadOnly = $true
+    $resultsGrid.AllowUserToAddRows = $false
+    $resultsGrid.AllowUserToDeleteRows = $false
+    $resultsGrid.AllowUserToOrderColumns = $false
+    $resultsGrid.AutoGenerateColumns = $true
+    $resultsGrid.AutoSizeRowsMode = [System.Windows.Forms.DataGridViewAutoSizeRowsMode]::None
+    $resultsGrid.SelectionMode = [System.Windows.Forms.DataGridViewSelectionMode]::CellSelect
+    $querySplit.Panel2.Controls.Add($resultsGrid)
 
     $settingsTab = [System.Windows.Forms.TabPage]::new()
     $settingsTab.Name = 'SettingsTab'
@@ -631,6 +962,25 @@ function New-SqlUtilityMainForm {
     $deleteConnectionButton.Add_Click({ Invoke-SqlUtilityDeleteConnection -Form $form }.GetNewClosure())
     $saveSettingsButton.Add_Click({ Invoke-SqlUtilitySaveSettings -Form $form }.GetNewClosure())
     $changeConnectionButton.Add_Click({ Invoke-SqlUtilityChangeConnection -Form $form }.GetNewClosure())
+    $executeButton.Add_Click({ Invoke-SqlUtilityQueryAction -Form $form }.GetNewClosure())
+    $previousPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta -1 }.GetNewClosure())
+    $nextPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta 1 }.GetNewClosure())
+    $exportButton.Add_Click({ Invoke-SqlUtilityExportAction -Form $form }.GetNewClosure())
+    $sqlEditor.Add_TextChanged({
+        if ($null -ne $form.Tag.ExecutedQuery -and -not $form.Tag.IsQueryStale) {
+            $matchesExecutedText = [string]::Equals(
+                [string] $sqlEditor.Text,
+                [string] $form.Tag.ExecutedQuery.OriginalEditorSql,
+                [System.StringComparison]::Ordinal
+            )
+            if (-not $matchesExecutedText) {
+                $form.Tag.IsQueryStale = $true
+                $previousPageButton.Enabled = $false
+                $nextPageButton.Enabled = $false
+                $exportButton.Enabled = $false
+            }
+        }
+    }.GetNewClosure())
 
     Update-SqlUtilitySavedConnections -Form $form
     $serverTextBox.Text = ''

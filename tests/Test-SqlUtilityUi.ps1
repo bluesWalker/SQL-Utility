@@ -17,11 +17,29 @@ function New-TestServices {
         WriteCalls = [System.Collections.Generic.List[object]]::new()
         Messages = [System.Collections.Generic.List[object]]::new()
         ConfirmCalls = [System.Collections.Generic.List[object]]::new()
+        ValidationCalls = [System.Collections.Generic.List[object]]::new()
+        OrderedCalls = [System.Collections.Generic.List[object]]::new()
+        UnorderedCalls = [System.Collections.Generic.List[object]]::new()
+        LocalPageCalls = [System.Collections.Generic.List[object]]::new()
+        ExportCalls = [System.Collections.Generic.List[object]]::new()
+        PromptCalls = 0
         DialogCalls = 0
         TestError = $null
         WriteError = $null
+        ExecuteError = $null
+        ExportError = $null
         ConfirmResult = $true
         WriteToDisk = $false
+        ValidationResult = [pscustomobject][ordered]@{
+            IsValid = $true
+            ErrorMessage = ''
+            NormalizedSql = 'SELECT Id FROM dbo.Items ORDER BY Id'
+            TableIdentifier = 'dbo.Items'
+            HasOrderBy = $true
+        }
+        OrderedResults = @{}
+        UnorderedResult = $null
+        PromptPath = $null
     }
 
     $services = @{
@@ -52,6 +70,74 @@ function New-TestServices {
             [void] $recorder.ConfirmCalls.Add([pscustomobject]@{ Text = $Text; Caption = $Caption })
             return [bool] $recorder.ConfirmResult
         }.GetNewClosure()
+        ValidateQuery = {
+            param($Sql)
+            [void] $recorder.ValidationCalls.Add($Sql)
+            return $recorder.ValidationResult
+        }.GetNewClosure()
+        ExecuteOrderedPage = {
+            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds)
+            [void] $recorder.OrderedCalls.Add([pscustomobject]@{
+                Server = $Server
+                Database = $Database
+                Sql = $Sql
+                PageNumber = $PageNumber
+                TimeoutSeconds = $TimeoutSeconds
+            })
+            if ($null -ne $recorder.ExecuteError) {
+                throw [System.TimeoutException]::new([string] $recorder.ExecuteError)
+            }
+            return $recorder.OrderedResults[[int] $PageNumber]
+        }.GetNewClosure()
+        ExecuteUnordered = {
+            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds)
+            [void] $recorder.UnorderedCalls.Add([pscustomobject]@{
+                Server = $Server
+                Database = $Database
+                Sql = $Sql
+                RowLimit = $RowLimit
+                TimeoutSeconds = $TimeoutSeconds
+            })
+            if ($null -ne $recorder.ExecuteError) {
+                throw [System.InvalidOperationException]::new([string] $recorder.ExecuteError)
+            }
+            return $recorder.UnorderedResult
+        }.GetNewClosure()
+        GetLocalPage = {
+            param($CachedData, $PageNumber, $IsComplete, $IsTruncated)
+            [void] $recorder.LocalPageCalls.Add([pscustomobject]@{
+                CachedData = $CachedData
+                PageNumber = $PageNumber
+                IsComplete = $IsComplete
+                IsTruncated = $IsTruncated
+            })
+            return Get-SqlUtilityLocalPage -CachedData $CachedData -PageNumber $PageNumber `
+                -IsComplete $IsComplete -IsTruncated $IsTruncated
+        }.GetNewClosure()
+        ExportResult = {
+            param($State, $DestinationPath)
+            $normalizedSql = $null
+            $cachedData = $null
+            if ($null -ne $State.ExecutedQuery) {
+                $normalizedSql = $State.ExecutedQuery.NormalizedSql
+            }
+            if ($null -ne $State.CurrentResult) {
+                $cachedData = $State.CurrentResult.CachedData
+            }
+            [void] $recorder.ExportCalls.Add([pscustomobject]@{
+                DestinationPath = $DestinationPath
+                State = $State
+                NormalizedSql = $normalizedSql
+                CachedData = $cachedData
+            })
+            if ($null -ne $recorder.ExportError) {
+                throw [System.IO.IOException]::new([string] $recorder.ExportError)
+            }
+        }.GetNewClosure()
+        PromptSavePath = {
+            $recorder.PromptCalls++
+            return $recorder.PromptPath
+        }.GetNewClosure()
         ShowDialog = {
             param($Form)
             $recorder.DialogCalls++
@@ -76,12 +162,62 @@ function Show-TestForm($Form) {
     [System.Windows.Forms.Application]::DoEvents()
 }
 
+function New-TestDataTable {
+    param(
+        [int] $RowCount,
+        [int] $TextLength = 8
+    )
+
+    $table = [System.Data.DataTable]::new()
+    [void] $table.Columns.Add('Id', [int])
+    [void] $table.Columns.Add('Description', [string])
+    for ($index = 1; $index -le $RowCount; $index++) {
+        $row = $table.NewRow()
+        $row.Id = $index
+        $row.Description = ('x' * $TextLength) + $index
+        [void] $table.Rows.Add($row)
+    }
+    return (, $table)
+}
+
+function New-TestPageResult {
+    param(
+        [Parameter(Mandatory = $true)][System.Data.DataTable] $Data,
+        [AllowNull()][System.Data.DataTable] $CachedData,
+        [int] $PageNumber = 1,
+        [bool] $HasPrevious = $false,
+        [bool] $HasNext = $false,
+        [bool] $IsComplete = $false,
+        [bool] $IsTruncated = $false
+    )
+
+    return [pscustomobject][ordered]@{
+        Data = $Data
+        CachedData = $CachedData
+        PageNumber = $PageNumber
+        DisplayedRowCount = $Data.Rows.Count
+        HasPrevious = $HasPrevious
+        HasNext = $HasNext
+        IsComplete = $IsComplete
+        IsTruncated = $IsTruncated
+    }
+}
+
+function Enter-TestWorkspace($Form) {
+    $Form.Tag.ActiveServer = 'QueryServer'
+    $Form.Tag.ActiveDatabase = 'QueryDatabase'
+    Set-SqlUtilityStage -Form $Form -Stage 'Workspace'
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
 $requiredControlNames = @(
     'ConnectionPanel', 'ServerTextBox', 'DatabaseTextBox', 'TestConnectionButton',
     'ConnectButton', 'SavedConnectionsList', 'DeleteConnectionButton',
     'WorkspacePanel', 'ActiveConnectionLabel', 'ChangeConnectionButton',
     'WorkspaceTabs', 'QueryTab', 'SettingsTab', 'UnorderedLimitNumeric',
-    'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel'
+    'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
+    'SqlEditor', 'ExecuteButton', 'ExportButton', 'PreviousPageButton',
+    'NextPageButton', 'PageStatusLabel', 'ResultsGrid'
 )
 
 # Initial stage, stable control contract, saved-pair selection, and settings bounds.
@@ -288,6 +424,307 @@ try {
 finally {
     $settingsForm.Close()
     $settingsForm.Dispose()
+}
+
+# Invalid policy results clear prior results and never reach a database executor.
+$invalidHarness = New-TestServices
+$invalidHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
+    IsValid = $false
+    ErrorMessage = 'Only one read-only SELECT is allowed.'
+    NormalizedSql = ''
+    TableIdentifier = ''
+    HasOrderBy = $false
+}
+$invalidForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $invalidHarness.Services
+try {
+    Show-TestForm $invalidForm
+    Enter-TestWorkspace $invalidForm
+    $priorData = New-TestDataTable -RowCount 1
+    $invalidForm.Tag.ExecutedQuery = [pscustomobject]@{ OriginalEditorSql = 'old'; NormalizedSql = 'old'; HasOrderBy = $true }
+    $invalidForm.Tag.CurrentResult = New-TestPageResult -Data $priorData -PageNumber 1 -HasNext $true
+    Show-SqlUtilityPage -Form $invalidForm -PageResult $invalidForm.Tag.CurrentResult
+    (Get-TestControl $invalidForm 'SqlEditor').Text = 'DELETE FROM dbo.Items'
+    (Get-TestControl $invalidForm 'ExecuteButton').PerformClick()
+
+    Assert-Equal 1 $invalidHarness.Recorder.ValidationCalls.Count 'Execute validates editor SQL once'
+    Assert-Equal 0 $invalidHarness.Recorder.OrderedCalls.Count 'Invalid policy never calls ordered database execution'
+    Assert-Equal 0 $invalidHarness.Recorder.UnorderedCalls.Count 'Invalid policy never calls unordered database execution'
+    Assert-Equal $null $invalidForm.Tag.ExecutedQuery 'Invalid policy clears executed snapshot'
+    Assert-Equal $null $invalidForm.Tag.CurrentResult 'Invalid policy clears result state'
+    Assert-Equal 0 $invalidForm.Tag.CurrentPage 'Invalid policy clears page state'
+    Assert-Equal $null (Get-TestControl $invalidForm 'ResultsGrid').DataSource 'Invalid policy clears result grid'
+    Assert-Equal 'Only one read-only SELECT is allowed.' $invalidHarness.Recorder.Messages[0].Text 'Invalid policy displays concise validator message'
+}
+finally {
+    $invalidForm.Close()
+    $invalidForm.Dispose()
+}
+
+# Ordered execution binds page metadata, reexecutes the normalized snapshot, caps grid widths, and becomes stale on edit.
+$orderedHarness = New-TestServices
+$orderedPage1Data = New-TestDataTable -RowCount 500 -TextLength 400
+$orderedPage2Data = New-TestDataTable -RowCount 2
+$orderedHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data $orderedPage1Data -PageNumber 1 -HasNext $true
+$orderedHarness.Recorder.OrderedResults[2] = New-TestPageResult -Data $orderedPage2Data -PageNumber 2 -HasPrevious $true
+$orderedForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $orderedHarness.Services
+try {
+    Show-TestForm $orderedForm
+    Enter-TestWorkspace $orderedForm
+    $sqlEditor = Get-TestControl $orderedForm 'SqlEditor'
+    $executeButton = Get-TestControl $orderedForm 'ExecuteButton'
+    $previousButton = Get-TestControl $orderedForm 'PreviousPageButton'
+    $nextButton = Get-TestControl $orderedForm 'NextPageButton'
+    $exportButton = Get-TestControl $orderedForm 'ExportButton'
+    $resultsGrid = Get-TestControl $orderedForm 'ResultsGrid'
+    $originalEditorSql = " SELECT Id FROM dbo.Items`r`nORDER BY Id; "
+    $sqlEditor.Text = $originalEditorSql
+    $executeButton.PerformClick()
+
+    Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Execute calls ordered service once'
+    Assert-Equal 'QueryServer' $orderedHarness.Recorder.OrderedCalls[0].Server 'Ordered Execute uses active server'
+    Assert-Equal 'QueryDatabase' $orderedHarness.Recorder.OrderedCalls[0].Database 'Ordered Execute uses active database'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[0].Sql 'Ordered Execute uses normalized SQL'
+    Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls[0].PageNumber 'Ordered Execute requests page one'
+    Assert-Equal 120 $orderedHarness.Recorder.OrderedCalls[0].TimeoutSeconds 'Ordered Execute uses configured timeout'
+    Assert-Equal $originalEditorSql $orderedForm.Tag.ExecutedQuery.OriginalEditorSql 'Ordered Execute preserves exact editor snapshot'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Ordered Execute stores normalized snapshot'
+    Assert-Equal 500 $resultsGrid.Rows.Count 'Ordered page binds 500 displayed rows'
+    Assert-Equal $true $resultsGrid.ReadOnly 'Results grid is read-only'
+    Assert-Equal $false $resultsGrid.AllowUserToAddRows 'Results grid prevents row insertion'
+    Assert-Equal $false $resultsGrid.AllowUserToDeleteRows 'Results grid prevents row deletion'
+    Assert-Equal $false $previousButton.Enabled 'Ordered page one disables Previous'
+    Assert-Equal $true $nextButton.Enabled 'Ordered page one enables Next from sentinel metadata'
+    Assert-Equal $true $exportButton.Enabled 'Fresh ordered result enables export'
+    Assert-Equal 'Page 1 - 500 rows' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered status reports page and displayed rows'
+    foreach ($column in $resultsGrid.Columns) {
+        Assert-True ($column.Width -le 200) "Grid caps $($column.Name) at 200 pixels"
+        Assert-Equal ([System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None) $column.AutoSizeMode "Grid leaves $($column.Name) fixed after sizing"
+    }
+
+    $nextButton.PerformClick()
+    Assert-Equal 2 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Next reexecutes query'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[1].Sql 'Ordered Next uses exact normalized executed snapshot'
+    Assert-Equal 2 $orderedHarness.Recorder.OrderedCalls[1].PageNumber 'Ordered Next requests target page'
+    Assert-Equal 'Page 2 - 2 rows' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered Next updates page status'
+    $previousButton.PerformClick()
+    Assert-Equal 3 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Previous reexecutes query'
+    Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls[2].PageNumber 'Ordered Previous requests target page'
+
+    $snapshotBeforeEdit = $orderedForm.Tag.ExecutedQuery
+    $sqlEditor.Text = 'SELECT Id FROM dbo.Items ORDER BY Description'
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal $true $orderedForm.Tag.IsQueryStale 'Editor change marks successful result stale'
+    Assert-Equal $snapshotBeforeEdit $orderedForm.Tag.ExecutedQuery 'Editor change retains executed snapshot object'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Editor change never mutates normalized snapshot'
+    Assert-Equal 500 $resultsGrid.Rows.Count 'Editor change preserves displayed rows'
+    Assert-Equal $false $previousButton.Enabled 'Stale result disables Previous'
+    Assert-Equal $false $nextButton.Enabled 'Stale result disables Next'
+    Assert-Equal $false $exportButton.Enabled 'Stale result disables Export'
+}
+finally {
+    $orderedForm.Close()
+    $orderedForm.Dispose()
+}
+
+# Complete unordered execution pages only through its cache and exports the complete cache.
+$unorderedHarness = New-TestServices
+$unorderedHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
+    IsValid = $true
+    ErrorMessage = ''
+    NormalizedSql = 'SELECT Id FROM dbo.Items'
+    TableIdentifier = 'dbo.Items'
+    HasOrderBy = $false
+}
+$unorderedCache = New-TestDataTable -RowCount 650
+$unorderedFirstPage = Get-SqlUtilityLocalPage -CachedData $unorderedCache -PageNumber 1 -IsComplete $true -IsTruncated $false
+$unorderedHarness.Recorder.UnorderedResult = $unorderedFirstPage
+$unorderedHarness.Recorder.PromptPath = 'C:\exports\complete.xlsx'
+$unorderedForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $unorderedHarness.Services
+try {
+    Show-TestForm $unorderedForm
+    Enter-TestWorkspace $unorderedForm
+    (Get-TestControl $unorderedForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items;'
+    (Get-TestControl $unorderedForm 'ExecuteButton').PerformClick()
+
+    Assert-Equal 1 $unorderedHarness.Recorder.UnorderedCalls.Count 'Unordered Execute calls unordered service once'
+    Assert-Equal 1000 $unorderedHarness.Recorder.UnorderedCalls[0].RowLimit 'Unordered Execute uses configured row limit'
+    Assert-Equal 0 $unorderedHarness.Recorder.OrderedCalls.Count 'Unordered Execute never calls ordered service'
+    Assert-Equal 0 $unorderedHarness.Recorder.Messages.Count 'Complete unordered result shows no truncation popup'
+    Assert-Equal $true (Get-TestControl $unorderedForm 'ExportButton').Enabled 'Complete unordered result enables export'
+
+    (Get-TestControl $unorderedForm 'NextPageButton').PerformClick()
+    Assert-Equal 1 $unorderedHarness.Recorder.UnorderedCalls.Count 'Unordered Next never queries SQL again'
+    Assert-Equal 1 $unorderedHarness.Recorder.LocalPageCalls.Count 'Unordered Next uses local-page service'
+    Assert-True ([object]::ReferenceEquals($unorderedCache, $unorderedHarness.Recorder.LocalPageCalls[0].CachedData)) 'Unordered Next uses retained cache object'
+    Assert-Equal 2 $unorderedHarness.Recorder.LocalPageCalls[0].PageNumber 'Unordered Next requests local page two'
+    Assert-Equal 'Page 2 - 150 rows' (Get-TestControl $unorderedForm 'PageStatusLabel').Text 'Unordered local page shows remaining rows'
+
+    (Get-TestControl $unorderedForm 'ExportButton').PerformClick()
+    Assert-Equal 1 $unorderedHarness.Recorder.PromptCalls 'Export opens save prompt once'
+    Assert-Equal 1 $unorderedHarness.Recorder.ExportCalls.Count 'Complete unordered export invokes exporter'
+    Assert-Equal 'C:\exports\complete.xlsx' $unorderedHarness.Recorder.ExportCalls[0].DestinationPath 'Export forwards selected destination'
+    Assert-True ([object]::ReferenceEquals($unorderedCache, $unorderedHarness.Recorder.ExportCalls[0].CachedData)) 'Complete unordered export passes entire cache through state'
+    Assert-Equal 1 @($unorderedHarness.Recorder.Messages | Where-Object Icon -eq 'Information').Count 'Successful export shows one information popup'
+    Assert-True (-not ($unorderedForm.Tag.PSObject.Properties.Name -contains 'DestinationPath')) 'Export destination is never retained in state'
+}
+finally {
+    $unorderedForm.Close()
+    $unorderedForm.Dispose()
+}
+
+# Truncated unordered execution retains the configured maximum, warns once, locally pages, and cannot export.
+$truncatedHarness = New-TestServices
+$truncatedHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
+    IsValid = $true
+    ErrorMessage = ''
+    NormalizedSql = 'SELECT Id FROM dbo.Items'
+    TableIdentifier = 'dbo.Items'
+    HasOrderBy = $false
+}
+$truncatedCache = New-TestDataTable -RowCount 1000
+$truncatedHarness.Recorder.UnorderedResult = Get-SqlUtilityLocalPage -CachedData $truncatedCache -PageNumber 1 -IsComplete $false -IsTruncated $true
+$truncatedForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $truncatedHarness.Services
+try {
+    Show-TestForm $truncatedForm
+    Enter-TestWorkspace $truncatedForm
+    (Get-TestControl $truncatedForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items'
+    (Get-TestControl $truncatedForm 'ExecuteButton').PerformClick()
+    Assert-Equal 1000 $truncatedForm.Tag.CurrentResult.CachedData.Rows.Count 'Truncated result retains first configured maximum'
+    Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Truncated result asks for ORDER BY exactly once'
+    Assert-Equal $false (Get-TestControl $truncatedForm 'ExportButton').Enabled 'Truncated result disables export'
+    (Get-TestControl $truncatedForm 'NextPageButton').PerformClick()
+    Assert-Equal 1 $truncatedHarness.Recorder.LocalPageCalls.Count 'Truncated result pages locally'
+    Assert-Equal 500 (Get-TestControl $truncatedForm 'ResultsGrid').Rows.Count 'Truncated second page retains remaining bounded rows'
+    Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Local paging does not repeat truncation popup'
+}
+finally {
+    $truncatedForm.Close()
+    $truncatedForm.Dispose()
+}
+
+# Query exceptions clear page/export state and always restore the form and cursor.
+$errorHarness = New-TestServices
+$errorHarness.Recorder.ExecuteError = 'query timed out'
+$errorHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 1) -PageNumber 1
+$errorForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $errorHarness.Services
+try {
+    Show-TestForm $errorForm
+    Enter-TestWorkspace $errorForm
+    (Get-TestControl $errorForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $errorForm 'ExecuteButton').PerformClick()
+    Assert-Equal $null $errorForm.Tag.CurrentResult 'Query exception clears current result'
+    Assert-Equal 0 $errorForm.Tag.CurrentPage 'Query exception clears page number'
+    Assert-Equal $null (Get-TestControl $errorForm 'ResultsGrid').DataSource 'Query exception clears grid'
+    Assert-Equal $false (Get-TestControl $errorForm 'PreviousPageButton').Enabled 'Query exception disables Previous'
+    Assert-Equal $false (Get-TestControl $errorForm 'NextPageButton').Enabled 'Query exception disables Next'
+    Assert-Equal $false (Get-TestControl $errorForm 'ExportButton').Enabled 'Query exception disables Export'
+    Assert-Equal $false $errorForm.Tag.IsBusy 'Query exception restores busy state'
+    Assert-Equal $true $errorForm.Enabled 'Query exception restores buttons'
+    Assert-Equal $false $errorForm.UseWaitCursor 'Query exception restores cursor'
+    Assert-Equal 1 @($errorHarness.Recorder.Messages | Where-Object Icon -eq 'Error').Count 'Query exception shows one error popup'
+}
+finally {
+    $errorForm.Close()
+    $errorForm.Dispose()
+}
+
+# Export cancellation is inert; export failures report errors without clearing a valid result.
+$exportHarness = New-TestServices
+$exportHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 2) -PageNumber 1
+$exportForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $exportHarness.Services
+try {
+    Show-TestForm $exportForm
+    Enter-TestWorkspace $exportForm
+    (Get-TestControl $exportForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id;'
+    (Get-TestControl $exportForm 'ExecuteButton').PerformClick()
+    $resultBeforeExport = $exportForm.Tag.CurrentResult
+    (Get-TestControl $exportForm 'ExportButton').PerformClick()
+    Assert-Equal 1 $exportHarness.Recorder.PromptCalls 'Canceled export still prompts once'
+    Assert-Equal 0 $exportHarness.Recorder.ExportCalls.Count 'Canceled save dialog never invokes exporter'
+    Assert-Equal 0 $exportHarness.Recorder.Messages.Count 'Canceled save dialog shows no popup'
+
+    $exportHarness.Recorder.PromptPath = 'C:\exports\ordered.xlsx'
+    $exportHarness.Recorder.ExportError = 'destination denied'
+    (Get-TestControl $exportForm 'ExportButton').PerformClick()
+    Assert-Equal 1 $exportHarness.Recorder.ExportCalls.Count 'Chosen ordered export invokes exporter once'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $exportHarness.Recorder.ExportCalls[0].NormalizedSql 'Ordered export receives exact unpaged normalized snapshot'
+    Assert-Equal 1 @($exportHarness.Recorder.Messages | Where-Object Icon -eq 'Error').Count 'Failed export shows one error popup'
+    Assert-Equal $resultBeforeExport $exportForm.Tag.CurrentResult 'Failed export preserves valid result state'
+    Assert-Equal $false $exportForm.Tag.IsBusy 'Failed export restores busy state'
+    Assert-Equal $false $exportForm.UseWaitCursor 'Failed export restores cursor'
+}
+finally {
+    $exportForm.Close()
+    $exportForm.Dispose()
+}
+
+# The production export workflow composes ordered SQL streaming and unordered cached rows through neutral callbacks.
+$script:queryCompositionRecorder = [pscustomobject]@{
+    OrderedCalls = [System.Collections.Generic.List[object]]::new()
+    Exports = [System.Collections.Generic.List[object]]::new()
+}
+$originalOrderedRowStream = ${function:Invoke-SqlUtilityOrderedRowStream}
+$originalXlsxExport = ${function:Export-SqlUtilityXlsx}
+try {
+    Set-Item -Path Function:\Invoke-SqlUtilityOrderedRowStream -Value {
+        param($Server, $Database, $Sql, $CommandTimeoutSeconds, $OnSchema, $OnRow, $ShouldContinue)
+        [void] $script:queryCompositionRecorder.OrderedCalls.Add([pscustomobject]@{
+            Server = $Server
+            Database = $Database
+            Sql = $Sql
+            TimeoutSeconds = $CommandTimeoutSeconds
+        })
+        $null = & $OnSchema @([pscustomobject]@{ Name = 'Id'; DataType = [int]; Ordinal = 0 })
+        if (& $ShouldContinue) { $null = & $OnRow ([object[]] @(7)) }
+    }
+    Set-Item -Path Function:\Export-SqlUtilityXlsx -Value {
+        param($DestinationPath, $RowSource, $TimeoutSeconds)
+        $capture = [pscustomobject]@{
+            DestinationPath = $DestinationPath
+            TimeoutSeconds = $TimeoutSeconds
+            SchemaCount = 0
+            RowCount = 0
+        }
+        & $RowSource `
+            { param($Schema) $capture.SchemaCount = @($Schema).Count }.GetNewClosure() `
+            { param($Values) $capture.RowCount++ }.GetNewClosure() `
+            { return $true }
+        [void] $script:queryCompositionRecorder.Exports.Add($capture)
+    }
+
+    $orderedState = [pscustomobject]@{
+        ActiveServer = 'CompositionServer'
+        ActiveDatabase = 'CompositionDatabase'
+        Config = [pscustomobject]@{ queryExportTimeoutSeconds = 321 }
+        ExecutedQuery = [pscustomobject]@{
+            HasOrderBy = $true
+            NormalizedSql = 'SELECT Id FROM dbo.Items ORDER BY Id'
+        }
+        CurrentResult = New-TestPageResult -Data (New-TestDataTable -RowCount 1) -PageNumber 1
+    }
+    Invoke-SqlUtilityExportWorkflow -State $orderedState -DestinationPath 'C:\exports\composition-ordered.xlsx'
+    Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Ordered export workflow opens one neutral row stream'
+    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $script:queryCompositionRecorder.OrderedCalls[0].Sql 'Ordered export workflow streams exact normalized unpaged snapshot'
+    Assert-Equal 321 $script:queryCompositionRecorder.OrderedCalls[0].TimeoutSeconds 'Ordered export workflow forwards configured timeout to SQL stream'
+    Assert-Equal 1 $script:queryCompositionRecorder.Exports[0].RowCount 'Ordered row stream reaches neutral Excel exporter'
+
+    $completeCache = New-TestDataTable -RowCount 3
+    $unorderedState = [pscustomobject]@{
+        ActiveServer = 'UnusedServer'
+        ActiveDatabase = 'UnusedDatabase'
+        Config = [pscustomobject]@{ queryExportTimeoutSeconds = 654 }
+        ExecutedQuery = [pscustomobject]@{ HasOrderBy = $false; NormalizedSql = 'SELECT Id FROM dbo.Items' }
+        CurrentResult = New-TestPageResult -Data $completeCache -CachedData $completeCache -PageNumber 1 -IsComplete $true
+    }
+    Invoke-SqlUtilityExportWorkflow -State $unorderedState -DestinationPath 'C:\exports\composition-unordered.xlsx'
+    Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Unordered export workflow never opens SQL row stream'
+    Assert-Equal 3 $script:queryCompositionRecorder.Exports[1].RowCount 'Unordered export workflow supplies every cached row'
+    Assert-Equal 654 $script:queryCompositionRecorder.Exports[1].TimeoutSeconds 'Unordered export workflow forwards configured timeout to Excel'
+}
+finally {
+    Set-Item -Path Function:\Invoke-SqlUtilityOrderedRowStream -Value $originalOrderedRowStream
+    Set-Item -Path Function:\Export-SqlUtilityXlsx -Value $originalXlsxExport
+    Remove-Variable -Name queryCompositionRecorder -Scope Script -ErrorAction SilentlyContinue
 }
 
 # Change Connection cancellation preserves state; confirmation clears transient query/result state and inputs.

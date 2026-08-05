@@ -1,0 +1,108 @@
+$ErrorActionPreference = 'Stop'
+
+$projectRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'Test-Helpers.ps1')
+. (Join-Path $projectRoot 'modules\SqlUtility.QueryPolicy.ps1')
+
+$accepted = @(
+    @{ Name = 'simple select'; Sql = 'SELECT * FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT * FROM dbo.Items' },
+    @{ Name = 'alias and ordered select'; Sql = 'SELECT i.Id FROM dbo.Items AS i WHERE i.Enabled = 1 ORDER BY i.Id'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT i.Id FROM dbo.Items AS i WHERE i.Enabled = 1 ORDER BY i.Id' },
+    @{ Name = 'grouped bracketed select'; Sql = 'SELECT DISTINCT [Type], COUNT(*) AS [Count] FROM [dbo].[Items] GROUP BY [Type] HAVING COUNT(*) > 1 ORDER BY [Type];'; Table = '[dbo].[Items]'; Ordered = $true; Normalized = 'SELECT DISTINCT [Type], COUNT(*) AS [Count] FROM [dbo].[Items] GROUP BY [Type] HAVING COUNT(*) > 1 ORDER BY [Type]' },
+    @{ Name = 'keywords in comments and strings'; Sql = "-- SELECT FROM fake`r`nSELECT CASE WHEN Name = 'ORDER BY' THEN 1 ELSE 0 END AS Flag FROM dbo.Items WHERE Note = 'JOIN'"; Table = 'dbo.Items'; Ordered = $false; Normalized = "-- SELECT FROM fake`r`nSELECT CASE WHEN Name = 'ORDER BY' THEN 1 ELSE 0 END AS Flag FROM dbo.Items WHERE Note = 'JOIN'" },
+    @{ Name = 'keywords in quoted text'; Sql = 'SELECT "ORDER BY" AS [Value] FROM dbo.Items /* JOIN x */ ORDER BY Id'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT "ORDER BY" AS [Value] FROM dbo.Items /* JOIN x */ ORDER BY Id' },
+    @{ Name = 'alias without AS'; Sql = 'SELECT i.Id FROM dbo.Items i WHERE i.Enabled = 1'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id FROM dbo.Items i WHERE i.Enabled = 1' },
+    @{ Name = 'quoted alias without AS'; Sql = 'SELECT [item alias].Id FROM dbo.Items [item alias]'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT [item alias].Id FROM dbo.Items [item alias]' },
+    @{ Name = 'quoted table and alias'; Sql = 'SELECT i.Id FROM "dbo"."Items" AS "i"'; Table = '"dbo"."Items"'; Ordered = $false; Normalized = 'SELECT i.Id FROM "dbo"."Items" AS "i"' },
+    @{ Name = 'reserved words in quoted identifiers'; Sql = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]'; Table = '[dbo].[UNION]'; Ordered = $false; Normalized = 'SELECT [JOIN], "TOP" FROM [dbo].[UNION]' },
+    @{ Name = 'parenthesized scalar expressions'; Sql = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT COALESCE((Id + 1), 0) AS NextId FROM dbo.Items WHERE (Enabled = 1)' },
+    @{ Name = 'nested order by does not order result'; Sql = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' },
+    @{ Name = 'final semicolon before line comment'; Sql = 'SELECT Id FROM dbo.Items ORDER BY Id; -- trailing comment'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT Id FROM dbo.Items ORDER BY Id -- trailing comment' },
+    @{ Name = 'final semicolon before block comment'; Sql = "SELECT Id FROM dbo.Items ;`r`n/* trailing comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT Id FROM dbo.Items `r`n/* trailing comment ; */  " },
+    @{ Name = 'escaped delimiters'; Sql = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]'; Table = '[dbo].[Items]'; Ordered = $false; Normalized = 'SELECT ''it''''s'', [a]]b], "a""b" FROM [dbo].[Items]' }
+)
+
+foreach ($case in $accepted) {
+    $result = Test-SqlUtilityQuery -Sql $case.Sql
+    Assert-True $result.IsValid "$($case.Name) is accepted"
+    Assert-True ($result.IsValid -is [bool]) "$($case.Name) returns Boolean IsValid"
+    Assert-Equal '' $result.ErrorMessage "$($case.Name) has no error"
+    Assert-Equal $case.Normalized $result.NormalizedSql "$($case.Name) preserves and normalizes source"
+    Assert-Equal $case.Table $result.TableIdentifier "$($case.Name) returns the exact table identifier"
+    Assert-Equal $case.Ordered $result.HasOrderBy "$($case.Name) detects only depth-zero ORDER BY"
+    Assert-True ($result.HasOrderBy -is [bool]) "$($case.Name) returns Boolean HasOrderBy"
+}
+
+$rejected = @(
+    @{ Name = 'blank SQL'; Sql = '   ' },
+    @{ Name = 'comment-only SQL'; Sql = '-- nothing executable' },
+    @{ Name = 'two statements'; Sql = 'SELECT * FROM dbo.Items; SELECT * FROM dbo.Other' },
+    @{ Name = 'two final semicolons'; Sql = 'SELECT * FROM dbo.Items;;' },
+    @{ Name = 'CTE'; Sql = 'WITH cte AS (SELECT * FROM dbo.Items) SELECT * FROM cte' },
+    @{ Name = 'nested SELECT'; Sql = 'SELECT Id FROM dbo.Items WHERE Id IN (SELECT Id FROM dbo.Other)' },
+    @{ Name = 'JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'APPLY'; Sql = 'SELECT i.Id FROM dbo.Items i CROSS APPLY dbo.Func(i.Id) f' },
+    @{ Name = 'comma table source'; Sql = 'SELECT * FROM dbo.Items, dbo.Other' },
+    @{ Name = 'UNION'; Sql = 'SELECT Id FROM dbo.Items UNION SELECT Id FROM dbo.Other' },
+    @{ Name = 'INTERSECT'; Sql = 'SELECT Id FROM dbo.Items INTERSECT SELECT Id FROM dbo.Other' },
+    @{ Name = 'EXCEPT'; Sql = 'SELECT Id FROM dbo.Items EXCEPT SELECT Id FROM dbo.Other' },
+    @{ Name = 'INTO'; Sql = 'SELECT * INTO dbo.Copy FROM dbo.Items' },
+    @{ Name = 'TOP'; Sql = 'SELECT TOP 10 * FROM dbo.Items' },
+    @{ Name = 'OFFSET'; Sql = 'SELECT * FROM dbo.Items ORDER BY Id OFFSET 10 ROWS' },
+    @{ Name = 'FETCH'; Sql = 'SELECT * FROM dbo.Items ORDER BY Id FETCH NEXT 10 ROWS ONLY' },
+    @{ Name = 'EXEC'; Sql = 'EXEC dbo.DoWork' },
+    @{ Name = 'EXECUTE'; Sql = 'EXECUTE dbo.DoWork' },
+    @{ Name = 'INSERT'; Sql = 'INSERT INTO dbo.Items(Id) VALUES (1)' },
+    @{ Name = 'UPDATE'; Sql = 'UPDATE dbo.Items SET Enabled = 0' },
+    @{ Name = 'DELETE'; Sql = 'DELETE FROM dbo.Items' },
+    @{ Name = 'MERGE'; Sql = 'MERGE dbo.Items AS target USING dbo.Other AS source ON target.Id = source.Id WHEN MATCHED THEN UPDATE SET target.Id = source.Id;' },
+    @{ Name = 'DROP'; Sql = 'DROP TABLE dbo.Items' },
+    @{ Name = 'ALTER'; Sql = 'ALTER TABLE dbo.Items ADD Flag bit' },
+    @{ Name = 'CREATE'; Sql = 'CREATE TABLE dbo.Items(Id int)' },
+    @{ Name = 'TRUNCATE'; Sql = 'TRUNCATE TABLE dbo.Items' },
+    @{ Name = 'BEGIN transaction'; Sql = 'BEGIN TRANSACTION' },
+    @{ Name = 'COMMIT'; Sql = 'COMMIT TRANSACTION' },
+    @{ Name = 'ROLLBACK'; Sql = 'ROLLBACK TRANSACTION' },
+    @{ Name = 'GRANT'; Sql = 'GRANT SELECT ON dbo.Items TO Public' },
+    @{ Name = 'REVOKE'; Sql = 'REVOKE SELECT ON dbo.Items FROM Public' },
+    @{ Name = 'DENY'; Sql = 'DENY SELECT ON dbo.Items TO Public' },
+    @{ Name = 'DECLARE'; Sql = 'DECLARE @Id int' },
+    @{ Name = 'SET'; Sql = 'SET NOCOUNT ON' },
+    @{ Name = 'USE'; Sql = 'USE master' },
+    @{ Name = 'BACKUP'; Sql = 'BACKUP DATABASE UtilityDb TO DISK = ''x.bak''' },
+    @{ Name = 'RESTORE'; Sql = 'RESTORE DATABASE UtilityDb FROM DISK = ''x.bak''' },
+    @{ Name = 'DBCC'; Sql = 'DBCC CHECKDB' },
+    @{ Name = 'BULK'; Sql = 'BULK INSERT dbo.Items FROM ''items.csv''' },
+    @{ Name = 'temporary table'; Sql = 'SELECT * FROM #Items' },
+    @{ Name = 'table variable'; Sql = 'SELECT * FROM @Items' },
+    @{ Name = 'three-part source'; Sql = 'SELECT * FROM UtilityDb.dbo.Items' },
+    @{ Name = 'four-part source'; Sql = 'SELECT * FROM ServerA.UtilityDb.dbo.Items' },
+    @{ Name = 'OPENQUERY'; Sql = 'SELECT * FROM OPENQUERY(ServerA, ''SELECT Id FROM dbo.Items'')' },
+    @{ Name = 'OPENROWSET'; Sql = 'SELECT * FROM OPENROWSET(''SQLNCLI'', ''Server=ServerA;Trusted_Connection=yes;'', ''SELECT Id FROM dbo.Items'')' },
+    @{ Name = 'OPENDATASOURCE'; Sql = 'SELECT * FROM OPENDATASOURCE(''SQLNCLI'', ''Data Source=ServerA;Integrated Security=SSPI'').UtilityDb.dbo.Items' },
+    @{ Name = 'unclosed string'; Sql = 'SELECT ''unterminated FROM dbo.Items' },
+    @{ Name = 'unclosed quoted identifier'; Sql = 'SELECT "unterminated FROM dbo.Items' },
+    @{ Name = 'unclosed bracketed identifier'; Sql = 'SELECT [unterminated FROM dbo.Items' },
+    @{ Name = 'unclosed block comment'; Sql = 'SELECT * FROM dbo.Items /* unterminated' },
+    @{ Name = 'unclosed parenthesis'; Sql = 'SELECT (Id + 1 FROM dbo.Items' },
+    @{ Name = 'unexpected closing parenthesis'; Sql = 'SELECT Id) FROM dbo.Items' },
+    @{ Name = 'missing FROM'; Sql = 'SELECT 1' },
+    @{ Name = 'multiple depth-zero FROM clauses'; Sql = 'SELECT FROM FROM dbo.Items' },
+    @{ Name = 'parenthesized table source'; Sql = 'SELECT * FROM (dbo.Items)' },
+    @{ Name = 'table alias missing after AS'; Sql = 'SELECT * FROM dbo.Items AS' },
+    @{ Name = 'clause keyword is not an alias after AS'; Sql = 'SELECT * FROM dbo.Items AS WHERE' },
+    @{ Name = 'extra table source token'; Sql = 'SELECT * FROM dbo.Items i extra' },
+    @{ Name = 'GROUP without BY'; Sql = 'SELECT Id FROM dbo.Items GROUP Id' },
+    @{ Name = 'ORDER without BY'; Sql = 'SELECT Id FROM dbo.Items ORDER Id' }
+)
+
+foreach ($case in $rejected) {
+    $result = Test-SqlUtilityQuery -Sql $case.Sql
+    Assert-True (-not $result.IsValid) "$($case.Name) is rejected"
+    Assert-True ($result.IsValid -is [bool]) "$($case.Name) returns Boolean IsValid"
+    Assert-True (-not [string]::IsNullOrWhiteSpace($result.ErrorMessage)) "$($case.Name) has a user-facing error"
+    Assert-Equal '' $result.NormalizedSql "$($case.Name) has no executable SQL"
+    Assert-Equal '' $result.TableIdentifier "$($case.Name) has no executable table"
+    Assert-Equal $false $result.HasOrderBy "$($case.Name) cannot be treated as ordered"
+}
+
+Complete-TestFile 'All query policy tests passed.'

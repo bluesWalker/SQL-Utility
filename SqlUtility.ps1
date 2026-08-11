@@ -103,6 +103,15 @@ function New-SqlUtilityDefaultServices {
             return Get-SqlUtilityLocalPage -CachedData $CachedData -PageNumber $PageNumber `
                 -IsComplete $IsComplete -IsTruncated $IsTruncated
         }
+        BuildCountSql = {
+            param($CountSourceSql, $OutputColumnCount)
+            return New-SqlUtilityCountSql -CountSourceSql $CountSourceSql -OutputColumnCount $OutputColumnCount
+        }
+        ExecuteCount = {
+            param($Server, $Database, $CountSql, $TimeoutSeconds)
+            return Invoke-SqlUtilityExactCount -Server $Server -Database $Database -CountSql $CountSql `
+                -CommandTimeoutSeconds $TimeoutSeconds
+        }
         ExportResult = {
             param($State, $DestinationPath)
             Invoke-SqlUtilityExportWorkflow -State $State -DestinationPath $DestinationPath
@@ -134,7 +143,8 @@ function Assert-SqlUtilityServices {
 
     foreach ($serviceName in @(
         'TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm', 'ValidateQuery',
-        'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'ExportResult', 'PromptSavePath'
+        'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'BuildCountSql', 'ExecuteCount',
+        'ExportResult', 'PromptSavePath'
     )) {
         if (-not $Services.ContainsKey($serviceName) -or $Services[$serviceName] -isnot [scriptblock]) {
             throw [System.ArgumentException]::new("Services must contain a '$serviceName' scriptblock.")
@@ -221,6 +231,7 @@ function Set-SqlUtilityBusy {
     if ($null -ne $statusLabel) {
         $statusLabel.Text = $Message
     }
+    Update-SqlUtilityQueryActionState -Form $Form
     $Form.Refresh()
 }
 
@@ -404,6 +415,7 @@ function Clear-SqlUtilityQueryResult {
     $state.CurrentResult = $null
     $state.CurrentPage = 0
     $state.IsQueryStale = $false
+    $state.ExplicitTotalRowCount = $null
 
     $resultsGrid = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultsGrid'
     if ($null -ne $resultsGrid) {
@@ -411,7 +423,7 @@ function Clear-SqlUtilityQueryResult {
         $resultsGrid.Rows.Clear()
         $resultsGrid.Columns.Clear()
     }
-    foreach ($buttonName in @('ExportButton', 'PreviousPageButton', 'NextPageButton')) {
+    foreach ($buttonName in @('ExportButton', 'CountButton', 'PreviousPageButton', 'NextPageButton')) {
         $button = Get-SqlUtilityNamedControl -Root $Form -Name $buttonName
         if ($null -ne $button) {
             $button.Enabled = $false
@@ -420,6 +432,82 @@ function Clear-SqlUtilityQueryResult {
     $pageStatus = Get-SqlUtilityNamedControl -Root $Form -Name 'PageStatusLabel'
     if ($null -ne $pageStatus) {
         $pageStatus.Text = ''
+    }
+    Update-SqlUtilityQueryActionState -Form $Form
+}
+
+function Get-SqlUtilityPageStatusText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $State,
+        [Parameter(Mandatory = $true)] $PageResult
+    )
+
+    $pageNumber = [int] $PageResult.PageNumber
+    $displayedRowCount = [int] $PageResult.DisplayedRowCount
+    $prefix = [string]::Format(
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        'Page {0} - {1}',
+        $pageNumber,
+        $displayedRowCount
+    )
+
+    $explicitTotal = $null
+    if ($null -ne $State.PSObject.Properties['ExplicitTotalRowCount']) {
+        $explicitTotal = $State.ExplicitTotalRowCount
+    }
+    if ($null -ne $explicitTotal) {
+        return '{0} of {1}' -f $prefix, ([long] $explicitTotal).ToString('N0', [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $hasOrderBy = $false
+    if ($null -ne $State.PSObject.Properties['ExecutedQuery'] -and $null -ne $State.ExecutedQuery) {
+        $hasOrderBy = [bool] $State.ExecutedQuery.HasOrderBy
+    }
+    if (-not $hasOrderBy -and [bool] $PageResult.IsComplete -and -not [bool] $PageResult.IsTruncated -and
+        $null -ne $PageResult.CachedData) {
+        return '{0} of {1}' -f $prefix, ([int] $PageResult.CachedData.Rows.Count).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    if (-not $hasOrderBy -and [bool] $PageResult.IsTruncated) {
+        return '{0} of {1}+' -f $prefix, ([int] $State.Config.unorderedRowLimit).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($hasOrderBy -and $pageNumber -eq 1 -and $displayedRowCount -eq 0) {
+        return '{0} of 0' -f $prefix
+    }
+    return $prefix
+}
+
+function Update-SqlUtilityQueryActionState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
+    )
+
+    $state = $Form.Tag
+    $previousButton = Get-SqlUtilityNamedControl -Root $Form -Name 'PreviousPageButton'
+    $nextButton = Get-SqlUtilityNamedControl -Root $Form -Name 'NextPageButton'
+    $exportButton = Get-SqlUtilityNamedControl -Root $Form -Name 'ExportButton'
+    $countButton = Get-SqlUtilityNamedControl -Root $Form -Name 'CountButton'
+
+    $hasFreshResult = -not $state.IsBusy -and -not $state.IsQueryStale -and `
+        $null -ne $state.ExecutedQuery -and $null -ne $state.CurrentResult
+    $exactCacheKnown = $hasFreshResult -and -not [bool] $state.ExecutedQuery.HasOrderBy -and `
+        [bool] $state.CurrentResult.IsComplete -and -not [bool] $state.CurrentResult.IsTruncated
+
+    if ($null -ne $previousButton) {
+        $previousButton.Enabled = $hasFreshResult -and [bool] $state.CurrentResult.HasPrevious
+    }
+    if ($null -ne $nextButton) {
+        $nextButton.Enabled = $hasFreshResult -and [bool] $state.CurrentResult.HasNext
+    }
+    if ($null -ne $exportButton) {
+        $exportButton.Enabled = $hasFreshResult -and (
+            [bool] $state.ExecutedQuery.HasOrderBy -or
+            ([bool] $state.CurrentResult.IsComplete -and -not [bool] $state.CurrentResult.IsTruncated)
+        )
+    }
+    if ($null -ne $countButton) {
+        $countButton.Enabled = $hasFreshResult -and -not $exactCacheKnown
     }
 }
 
@@ -432,25 +520,14 @@ function Show-SqlUtilityPage {
 
     $state = $Form.Tag
     $resultsGrid = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultsGrid'
-    $previousButton = Get-SqlUtilityNamedControl -Root $Form -Name 'PreviousPageButton'
-    $nextButton = Get-SqlUtilityNamedControl -Root $Form -Name 'NextPageButton'
-    $exportButton = Get-SqlUtilityNamedControl -Root $Form -Name 'ExportButton'
     $pageStatus = Get-SqlUtilityNamedControl -Root $Form -Name 'PageStatusLabel'
 
     $resultsGrid.DataSource = $null
     $resultsGrid.Columns.Clear()
     $resultsGrid.AutoGenerateColumns = $true
     $resultsGrid.DataSource = $PageResult.Data
-    $previousButton.Enabled = (-not $state.IsQueryStale) -and [bool] $PageResult.HasPrevious
-    $nextButton.Enabled = (-not $state.IsQueryStale) -and [bool] $PageResult.HasNext
-    $pageStatus.Text = 'Page {0} - {1} rows' -f $PageResult.PageNumber, $PageResult.DisplayedRowCount
-
-    $canExport = $false
-    if (-not $state.IsQueryStale -and $null -ne $state.ExecutedQuery) {
-        $canExport = [bool] $state.ExecutedQuery.HasOrderBy -or `
-            ([bool] $PageResult.IsComplete -and -not [bool] $PageResult.IsTruncated)
-    }
-    $exportButton.Enabled = $canExport
+    $pageStatus.Text = Get-SqlUtilityPageStatusText -State $state -PageResult $PageResult
+    Update-SqlUtilityQueryActionState -Form $Form
 
     foreach ($column in $resultsGrid.Columns) {
         $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells
@@ -485,26 +562,33 @@ function Invoke-SqlUtilityQueryAction {
             return
         }
 
-        $snapshot = [pscustomobject][ordered]@{
-            OriginalEditorSql = $editorSql
-            NormalizedSql = [string] $validation.NormalizedSql
-            HasOrderBy = [bool] $validation.HasOrderBy
-        }
-        if ($snapshot.HasOrderBy) {
+        $normalizedSql = [string] $validation.NormalizedSql
+        $hasOrderBy = [bool] $validation.HasOrderBy
+        if ($hasOrderBy) {
             $executeOrderedPage = $state.Services['ExecuteOrderedPage']
             $pageResult = & $executeOrderedPage $state.ActiveServer $state.ActiveDatabase `
-                $snapshot.NormalizedSql 1 $state.Config.queryExportTimeoutSeconds
+                $normalizedSql 1 $state.Config.queryExportTimeoutSeconds
         }
         else {
             $executeUnordered = $state.Services['ExecuteUnordered']
             $pageResult = & $executeUnordered $state.ActiveServer $state.ActiveDatabase `
-                $snapshot.NormalizedSql $state.Config.unorderedRowLimit $state.Config.queryExportTimeoutSeconds
+                $normalizedSql $state.Config.unorderedRowLimit $state.Config.queryExportTimeoutSeconds
+        }
+
+        $buildCountSql = $state.Services['BuildCountSql']
+        $countSql = & $buildCountSql ([string] $validation.CountSourceSql) ([int] $pageResult.Data.Columns.Count)
+        $snapshot = [pscustomobject][ordered]@{
+            OriginalEditorSql = $editorSql
+            NormalizedSql = $normalizedSql
+            HasOrderBy = $hasOrderBy
+            CountSql = [string] $countSql
         }
 
         $state.ExecutedQuery = $snapshot
         $state.CurrentResult = $pageResult
         $state.CurrentPage = [int] $pageResult.PageNumber
         $state.IsQueryStale = $false
+        $state.ExplicitTotalRowCount = $null
         Show-SqlUtilityPage -Form $Form -PageResult $pageResult
         if ([bool] $pageResult.IsTruncated) {
             Show-SqlUtilityMessage -State $state `
@@ -562,6 +646,45 @@ function Invoke-SqlUtilityPageAction {
         Show-SqlUtilityMessage -State $state `
             -Text ("Query failed.`r`n`r`n{0}" -f $_.Exception.Message) `
             -Caption 'Query Error' -Icon 'Error'
+    }
+    finally {
+        Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
+    }
+}
+
+function Invoke-SqlUtilityCountAction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form
+    )
+
+    $state = $Form.Tag
+    $countButton = Get-SqlUtilityNamedControl -Root $Form -Name 'CountButton'
+    $exactCacheKnown = $false
+    if ($null -ne $state.ExecutedQuery -and $null -ne $state.CurrentResult) {
+        $exactCacheKnown = -not [bool] $state.ExecutedQuery.HasOrderBy -and `
+            [bool] $state.CurrentResult.IsComplete -and -not [bool] $state.CurrentResult.IsTruncated
+    }
+    if ($null -eq $countButton -or -not $countButton.Enabled -or $state.IsBusy -or $state.IsQueryStale -or
+        $null -eq $state.ExecutedQuery -or $null -eq $state.CurrentResult -or $exactCacheKnown) {
+        return
+    }
+
+    $priorExplicitTotal = $state.ExplicitTotalRowCount
+    Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Counting rows...'
+    try {
+        $executeCount = $state.Services['ExecuteCount']
+        $total = & $executeCount $state.ActiveServer $state.ActiveDatabase $state.ExecutedQuery.CountSql `
+            $state.Config.queryExportTimeoutSeconds
+        $state.ExplicitTotalRowCount = [long] $total
+        $pageStatus = Get-SqlUtilityNamedControl -Root $Form -Name 'PageStatusLabel'
+        $pageStatus.Text = Get-SqlUtilityPageStatusText -State $state -PageResult $state.CurrentResult
+    }
+    catch {
+        $state.ExplicitTotalRowCount = $priorExplicitTotal
+        Show-SqlUtilityMessage -State $state `
+            -Text ("The row count could not be retrieved.`r`n`r`n{0}" -f $_.Exception.Message) `
+            -Caption 'Row Count Failed' -Icon 'Error'
     }
     finally {
         Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.'
@@ -685,6 +808,7 @@ function New-SqlUtilityMainForm {
         CurrentPage = 0
         IsQueryStale = $false
         IsBusy = $false
+        ExplicitTotalRowCount = $null
     }
     $form.Tag = $state
 
@@ -858,10 +982,18 @@ function New-SqlUtilityMainForm {
     $exportButton.Location = [System.Drawing.Point]::new(96, 5)
     $queryActionPanel.Controls.Add($exportButton)
 
+    $countButton = [System.Windows.Forms.Button]::new()
+    $countButton.Name = 'CountButton'
+    $countButton.Text = 'Count Rows'
+    $countButton.AutoSize = $true
+    $countButton.Enabled = $false
+    $countButton.Location = [System.Drawing.Point]::new(205, 5)
+    $queryActionPanel.Controls.Add($countButton)
+
     $pagingHelp = [System.Windows.Forms.Label]::new()
     $pagingHelp.Text = 'Paging requires ORDER BY on stable, preferably unique columns.'
     $pagingHelp.AutoSize = $true
-    $pagingHelp.Location = [System.Drawing.Point]::new(225, 10)
+    $pagingHelp.Location = [System.Drawing.Point]::new(310, 10)
     $queryActionPanel.Controls.Add($pagingHelp)
 
     $previousPageButton = [System.Windows.Forms.Button]::new()
@@ -978,6 +1110,7 @@ function New-SqlUtilityMainForm {
     $executeButton.Add_Click({ Invoke-SqlUtilityQueryAction -Form $form }.GetNewClosure())
     $previousPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta -1 }.GetNewClosure())
     $nextPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta 1 }.GetNewClosure())
+    $countButton.Add_Click({ Invoke-SqlUtilityCountAction -Form $form }.GetNewClosure())
     $exportButton.Add_Click({ Invoke-SqlUtilityExportAction -Form $form }.GetNewClosure())
     $sqlEditor.Add_TextChanged({
         if ($null -ne $form.Tag.ExecutedQuery -and -not $form.Tag.IsQueryStale) {
@@ -988,9 +1121,7 @@ function New-SqlUtilityMainForm {
             )
             if (-not $matchesExecutedText) {
                 $form.Tag.IsQueryStale = $true
-                $previousPageButton.Enabled = $false
-                $nextPageButton.Enabled = $false
-                $exportButton.Enabled = $false
+                Update-SqlUtilityQueryActionState -Form $form
             }
         }
     }.GetNewClosure())

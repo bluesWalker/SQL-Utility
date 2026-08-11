@@ -138,6 +138,8 @@ exit 37
         ExecuteOrderedPage = { throw 'Unexpected ExecuteOrderedPage call during form construction.' }
         ExecuteUnordered = { throw 'Unexpected ExecuteUnordered call during form construction.' }
         GetLocalPage = { throw 'Unexpected GetLocalPage call during form construction.' }
+        BuildCountSql = { throw 'Unexpected BuildCountSql call during form construction.' }
+        ExecuteCount = { throw 'Unexpected ExecuteCount call during form construction.' }
         ExportResult = { throw 'Unexpected ExportResult call during form construction.' }
         PromptSavePath = { throw 'Unexpected PromptSavePath call during form construction.' }
     }

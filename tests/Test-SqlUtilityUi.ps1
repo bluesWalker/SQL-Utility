@@ -269,7 +269,8 @@ $requiredControlNames = @(
     'WorkspaceTabs', 'QueryTab', 'SettingsTab', 'UnorderedLimitNumeric',
     'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
     'SqlEditor', 'ExecuteButton', 'ExportButton', 'CountButton', 'PreviousPageButton',
-    'NextPageButton', 'PageStatusLabel', 'ResultsGrid'
+    'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
+    'QuerySplitContainer', 'ResultsGrid'
 )
 
 # Page status text uses exact totals only when the state makes them known.
@@ -324,6 +325,98 @@ Assert-Equal 'Page 1 - 0 of 0' (Get-SqlUtilityPageStatusText -State $orderedStat
     'Empty ordered first page proves zero rows'
 Assert-Equal 'Page 2 - 0' (Get-SqlUtilityPageStatusText -State $orderedStateWithoutCount -PageResult $emptyLaterPage) `
     'Empty later ordered page does not claim the total is zero'
+
+# The query workspace uses the approved native fonts, one-row action layout, accessibility, and restrained system colors.
+$appearanceHarness = New-TestServices
+$appearanceForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $appearanceHarness.Services
+try {
+    Show-TestForm $appearanceForm
+    Enter-TestWorkspace $appearanceForm
+    $appearanceForm.Size = $appearanceForm.MinimumSize
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $queryEditor = Get-TestControl $appearanceForm 'SqlEditor'
+    $executeButton = Get-TestControl $appearanceForm 'ExecuteButton'
+    $pagingHelp = Get-TestControl $appearanceForm 'PagingHelpLabel'
+    $pageStatus = Get-TestControl $appearanceForm 'PageStatusLabel'
+    $countButton = Get-TestControl $appearanceForm 'CountButton'
+    $previousButton = Get-TestControl $appearanceForm 'PreviousPageButton'
+    $nextButton = Get-TestControl $appearanceForm 'NextPageButton'
+    $exportButton = Get-TestControl $appearanceForm 'ExportButton'
+    $queryActionLayout = Get-TestControl $appearanceForm 'QueryActionLayout'
+    $querySplit = Get-TestControl $appearanceForm 'QuerySplitContainer'
+    $resultsGrid = Get-TestControl $appearanceForm 'ResultsGrid'
+    if ($null -eq $pagingHelp) {
+        $pagingHelp = @($querySplit.Panel1.Controls | ForEach-Object { $_.Controls } |
+            Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match 'Paging' } | Select-Object -First 1)
+        if ($pagingHelp.Count -gt 0) { $pagingHelp = $pagingHelp[0] }
+    }
+
+    Assert-Equal 'Segoe UI' $appearanceForm.Font.Name 'Application uses Segoe UI'
+    Assert-Equal 9 ([int] $appearanceForm.Font.SizeInPoints) 'Application uses Segoe UI 9pt'
+    Assert-Equal 'Consolas' $queryEditor.Font.Name 'SQL editor keeps Consolas'
+    Assert-Equal 10 ([int] $queryEditor.Font.SizeInPoints) 'SQL editor keeps Consolas 10pt'
+
+    Assert-Equal 'Execute' $executeButton.Text 'Execute label remains explicit'
+    Assert-Equal 'ORDER BY required for paging.' $pagingHelp.Text 'Paging help stays beside Execute'
+    Assert-Equal 'Count' $countButton.Text 'Count action is explicit'
+    Assert-Equal '<' $previousButton.Text 'Previous action uses compact label'
+    Assert-Equal '>' $nextButton.Text 'Next action uses compact label'
+    Assert-Equal 'Export' $exportButton.Text 'Export action uses compact label'
+    Assert-Equal 'Previous page' $previousButton.AccessibleName 'Previous action retains accessible meaning'
+    Assert-Equal 'Next page' $nextButton.AccessibleName 'Next action retains accessible meaning'
+    Assert-Equal 'Export to Excel' $exportButton.AccessibleName 'Export retains accessible meaning'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($countButton.AccessibleDescription)) 'Count has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($previousButton.AccessibleDescription)) 'Previous has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($nextButton.AccessibleDescription)) 'Next has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($exportButton.AccessibleDescription)) 'Export has an accessible description'
+
+    $expectedActionOrder = @($executeButton, $pagingHelp, $pageStatus, $countButton, $previousButton, $nextButton, $exportButton)
+    Assert-Equal $true $pagingHelp.AutoEllipsis 'Paging help yields flexible width through ellipsis'
+    Assert-True ($queryActionLayout -is [System.Windows.Forms.TableLayoutPanel]) 'Query actions use a TableLayoutPanel'
+    if ($queryActionLayout -is [System.Windows.Forms.TableLayoutPanel]) {
+        Assert-Equal 1 $queryActionLayout.RowCount 'Query action layout has one row'
+        Assert-Equal 7 $queryActionLayout.ColumnCount 'Query action layout has seven control columns'
+        Assert-Equal 7 $queryActionLayout.ColumnStyles.Count 'Query action layout defines every control column'
+        Assert-Equal ([System.Windows.Forms.SizeType]::AutoSize) $queryActionLayout.ColumnStyles[0].SizeType 'Execute column autosizes'
+        Assert-Equal ([System.Windows.Forms.SizeType]::Percent) $queryActionLayout.ColumnStyles[1].SizeType 'Help column provides flexible space'
+        Assert-Equal 100 ([int] $queryActionLayout.ColumnStyles[1].Width) 'Help column owns all flexible width'
+        foreach ($columnIndex in 2..6) {
+            Assert-Equal ([System.Windows.Forms.SizeType]::AutoSize) $queryActionLayout.ColumnStyles[$columnIndex].SizeType `
+                "Query action column $columnIndex autosizes"
+        }
+        for ($columnIndex = 0; $columnIndex -lt $expectedActionOrder.Count; $columnIndex++) {
+            Assert-True ([object]::ReferenceEquals($expectedActionOrder[$columnIndex], $queryActionLayout.GetControlFromPosition($columnIndex, 0))) `
+                "Query action column $columnIndex contains the approved control"
+        }
+        Assert-True ($queryActionLayout.Height -lt 64) 'One-row query action layout is shorter than the old panel'
+        foreach ($control in $expectedActionOrder) {
+            Assert-True ($control.Left -ge 0 -and $control.Top -ge 0 -and
+                $control.Right -le $queryActionLayout.ClientSize.Width -and
+                $control.Bottom -le $queryActionLayout.ClientSize.Height) `
+                "$($control.Name) fits in the action row at minimum form size"
+        }
+    }
+
+    $applicationAccent = [System.Drawing.Color]::FromArgb(0, 120, 215)
+    Assert-Equal $applicationAccent $executeButton.BackColor 'Execute uses the restrained blue application accent'
+    Assert-Equal ([System.Drawing.Color]::White) $executeButton.ForeColor 'Execute accent keeps readable foreground text'
+    Assert-Equal ([System.Windows.Forms.FlatStyle]::Flat) $executeButton.FlatStyle 'Execute uses a restrained flat border'
+    foreach ($nativeButton in @($countButton, $previousButton, $nextButton, $exportButton)) {
+        Assert-Equal $true $nativeButton.UseVisualStyleBackColor "$($nativeButton.Name) keeps native button styling"
+        Assert-Equal ([System.Windows.Forms.FlatStyle]::Standard) $nativeButton.FlatStyle "$($nativeButton.Name) keeps standard light styling"
+    }
+    Assert-Equal ([System.Drawing.SystemColors]::Window) $resultsGrid.DefaultCellStyle.BackColor 'Grid cells use the system window surface'
+    Assert-Equal ([System.Drawing.SystemColors]::WindowText) $resultsGrid.DefaultCellStyle.ForeColor 'Grid cells use system window text'
+    Assert-Equal ([System.Drawing.SystemColors]::Control) $resultsGrid.ColumnHeadersDefaultCellStyle.BackColor 'Grid headers use a quiet system surface'
+    Assert-Equal ([System.Drawing.SystemColors]::ControlText) $resultsGrid.ColumnHeadersDefaultCellStyle.ForeColor 'Grid headers use dark system text'
+    Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $querySplit.FixedPanel 'Query splitter keeps both panels flexible'
+    Assert-Equal $false $querySplit.IsSplitterFixed 'Query splitter remains draggable'
+}
+finally {
+    $appearanceForm.Close()
+    $appearanceForm.Dispose()
+}
 
 # Initial stage, stable control contract, saved-pair selection, and settings bounds.
 $initialHarness = New-TestServices
@@ -666,9 +759,11 @@ try {
     Assert-Equal 0 $orderedHarness.Recorder.CountCalls.Count 'Execute never runs an automatic count'
     Assert-Equal 'Page 1 - 500' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered status reports page and displayed rows'
     foreach ($column in $resultsGrid.Columns) {
-        Assert-True ($column.Width -le 200) "Grid caps $($column.Name) at 200 pixels"
+        Assert-True ($column.Width -le 300) 'Result columns are capped at 300 pixels'
         Assert-Equal ([System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None) $column.AutoSizeMode "Grid leaves $($column.Name) fixed after sizing"
     }
+    $longValueColumn = $resultsGrid.Columns['Description']
+    Assert-Equal 300 $longValueColumn.Width 'A long result column reaches the new cap'
 
     $resultBeforeCount = $orderedForm.Tag.CurrentResult
     $gridDataBeforeCount = $resultsGrid.DataSource

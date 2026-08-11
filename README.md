@@ -75,7 +75,7 @@ The execution-policy override is process-only. It does not change the machine, u
 3. **Manage saved pairs.** Select a saved pair and use **Delete**. Deletion requires confirmation and updates the active configuration only after a successful write.
 4. **Run a query.** Enter an allowed SQL statement in the Query tab and select **Execute**. Results appear in a read-only grid below the editor. The single-line toolbar is ordered **Execute** | `ORDER BY required for paging.` | page status | **Count** | **<** | **>** | **Export**. The `<` and `>` controls mean Previous page and Next page; **Export** means Export to Excel.
 5. **Page results.** Use `<` and `>`. The exact behavior depends on whether the executed query contains a top-level `ORDER BY`.
-6. **Count rows when needed.** **Count** is always explicit; it never runs automatically during execution or paging. Complete unordered results already show their exact cached total and disable **Count**. Truncated unordered results show the configured retained limit with `+` until counted, while ordered results omit a total until **Count** succeeds.
+6. **Count rows when needed.** **Count** is always explicit; it never runs automatically during execution or paging. It is available only for a current successful result while the application is not busy and the editor is not stale. Complete unordered results already show their exact cached total and disable **Count**. Truncated unordered results show the configured retained limit with `+` until counted, while ordered results omit a total until **Count** succeeds; after counting an ordered or truncated result, **Count** remains available for an explicit refresh.
 7. **Export a complete result.** Use **Export** when enabled and choose an `.xlsx` destination. The destination is never remembered.
 8. **Change global settings.** The Settings tab controls the maximum unordered rows and Query/Export timeout. Changes become active only after **Save Settings** succeeds.
 9. **Change connection.** **Change Connection** warns that the current SQL and results will be lost. Confirmation clears transient query state and returns to the connection stage; saved pairs and global settings remain.
@@ -100,7 +100,7 @@ flowchart LR
 
 | File | Responsibility |
 | --- | --- |
-| `SqlUtility.ps1` | Creates WinForms controls, coordinates connection/query/count/settings/export workflows, owns application and explicit-count state, binds result pages, renders status and paging, and caps displayed grid columns at 300 pixels. |
+| `SqlUtility.ps1` | Creates WinForms controls, owns the one-line action layout, coordinates connection/query/count/settings/export workflows, owns application and explicit-count state, binds result pages, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
 | `modules/SqlUtility.Config.ps1` | Creates defaults, validates schema and settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
 | `modules/SqlUtility.QueryPolicy.ps1` | Tokenizes SQL, enforces the v1 single-table read-only grammar, normalizes executable SQL, extracts the table identifier, detects top-level `ORDER BY`, and generates count-source/wrapper SQL. |
 | `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, executes bounded queries and scalar counts, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |

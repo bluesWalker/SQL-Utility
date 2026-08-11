@@ -44,7 +44,54 @@ foreach ($case in $accepted) {
     Assert-Equal $case.Table $result.TableIdentifier "$($case.Name) returns the exact table identifier"
     Assert-Equal $case.Ordered $result.HasOrderBy "$($case.Name) detects only depth-zero ORDER BY"
     Assert-True ($result.HasOrderBy -is [bool]) "$($case.Name) returns Boolean HasOrderBy"
+    Assert-True ($null -ne $result.PSObject.Properties['CountSourceSql']) "$($case.Name) returns a count source"
 }
+
+$unordered = Test-SqlUtilityQuery -Sql 'SELECT * FROM dbo.Items;'
+Assert-Equal 'SELECT * FROM dbo.Items' $unordered.CountSourceSql `
+    'Unordered count source keeps the complete normalized query'
+
+$ordered = Test-SqlUtilityQuery -Sql @'
+SELECT CategoryId, COUNT(*)
+FROM dbo.Items
+GROUP BY CategoryId
+HAVING COUNT(*) > 5
+ORDER BY CategoryId;
+'@
+Assert-Equal @'
+SELECT CategoryId, COUNT(*)
+FROM dbo.Items
+GROUP BY CategoryId
+HAVING COUNT(*) > 5
+'@ $ordered.CountSourceSql 'Ordered count source removes only top-level ORDER BY'
+
+$orderInText = Test-SqlUtilityQuery -Sql "SELECT 'ORDER BY' AS Label FROM dbo.Items ORDER BY Id"
+Assert-Equal "SELECT 'ORDER BY' AS Label FROM dbo.Items" $orderInText.CountSourceSql `
+    'ORDER BY text inside a string literal is not the truncation point'
+
+$orderInExpression = Test-SqlUtilityQuery -Sql 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items ORDER BY RowNumber'
+Assert-Equal 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' $orderInExpression.CountSourceSql `
+    'ORDER BY inside an expression is not the truncation point'
+
+$countSql = New-SqlUtilityCountSql `
+    -CountSourceSql 'SELECT *, Price * 1.25 FROM dbo.Items' `
+    -OutputColumnCount 4
+
+$expectedCountSql = @'
+SELECT COUNT_BIG(*)
+FROM (
+SELECT *, Price * 1.25 FROM dbo.Items
+) AS [SqlUtilityCountSource] ([SqlUtilityCountColumn1], [SqlUtilityCountColumn2], [SqlUtilityCountColumn3], [SqlUtilityCountColumn4]);
+'@ -replace "`r?`n", "`r`n"
+Assert-Equal $expectedCountSql $countSql 'Count wrapper supplies one alias per actual result column'
+
+Assert-Throws {
+    New-SqlUtilityCountSql -CountSourceSql 'SELECT Id FROM dbo.Items' -OutputColumnCount 0
+} 'System.ArgumentOutOfRangeException' 'Count builder rejects a zero-column schema'
+
+Assert-Throws {
+    New-SqlUtilityCountSql -CountSourceSql '   ' -OutputColumnCount 1
+} 'System.ArgumentException' 'Count builder rejects an empty source'
 
 $rejected = @(
     @{ Name = 'blank SQL'; Sql = '   ' },
@@ -194,6 +241,7 @@ foreach ($case in $rejected) {
     Assert-Equal '' $result.NormalizedSql "$($case.Name) has no executable SQL"
     Assert-Equal '' $result.TableIdentifier "$($case.Name) has no executable table"
     Assert-Equal $false $result.HasOrderBy "$($case.Name) cannot be treated as ordered"
+    Assert-Equal '' $result.CountSourceSql "$($case.Name) has no count source"
 }
 
 Complete-TestFile 'All query policy tests passed.'

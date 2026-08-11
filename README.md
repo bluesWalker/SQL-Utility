@@ -17,6 +17,7 @@ Version 1 is intentionally small and synchronous. It is designed to be copied in
 - Server-side paging for queries with a top-level `ORDER BY`.
 - Bounded retrieval and local display paging for unordered queries.
 - Fixed 500-row display pages.
+- Explicit, on-demand exact row counts when a total is not already known from a complete unordered cache.
 - Complete-result `.xlsx` export with a bold, filtered, frozen header row.
 - Configurable unordered-row limit and Query/Export timeout.
 
@@ -72,11 +73,12 @@ The execution-policy override is process-only. It does not change the machine, u
 1. **Choose a connection.** Enter Server and Database manually, or select a saved pair from the list. Both input fields start blank on every launch; selecting a saved pair fills them without connecting automatically.
 2. **Test or connect.** **Test Connection** validates the database and shows a success/failure pop-up without entering the workspace. **Connect** performs the same validation and then opens the workspace. A successful pair is added to the saved list and the application attempts to persist it.
 3. **Manage saved pairs.** Select a saved pair and use **Delete**. Deletion requires confirmation and updates the active configuration only after a successful write.
-4. **Run a query.** Enter an allowed SQL statement in the Query tab and select **Execute**. Results appear in a read-only grid below the editor.
-5. **Page results.** Use **Previous** and **Next**. The exact behavior depends on whether the executed query contains a top-level `ORDER BY`.
-6. **Export a complete result.** Use **Export to Excel** when enabled and choose an `.xlsx` destination. The destination is never remembered.
-7. **Change global settings.** The Settings tab controls the maximum unordered rows and Query/Export timeout. Changes become active only after **Save Settings** succeeds.
-8. **Change connection.** **Change Connection** warns that the current SQL and results will be lost. Confirmation clears transient query state and returns to the connection stage; saved pairs and global settings remain.
+4. **Run a query.** Enter an allowed SQL statement in the Query tab and select **Execute**. Results appear in a read-only grid below the editor. The single-line toolbar is ordered **Execute** | `ORDER BY required for paging.` | page status | **Count** | **<** | **>** | **Export**. The `<` and `>` controls mean Previous page and Next page; **Export** means Export to Excel.
+5. **Page results.** Use `<` and `>`. The exact behavior depends on whether the executed query contains a top-level `ORDER BY`.
+6. **Count rows when needed.** **Count** is always explicit; it never runs automatically during execution or paging. Complete unordered results already show their exact cached total and disable **Count**. Truncated unordered results show the configured retained limit with `+` until counted, while ordered results omit a total until **Count** succeeds.
+7. **Export a complete result.** Use **Export** when enabled and choose an `.xlsx` destination. The destination is never remembered.
+8. **Change global settings.** The Settings tab controls the maximum unordered rows and Query/Export timeout. Changes become active only after **Save Settings** succeeds.
+9. **Change connection.** **Change Connection** warns that the current SQL and results will be lost. Confirmation clears transient query state and returns to the connection stage; saved pairs and global settings remain.
 
 The application does not keep an idle database connection open. Connection tests, query pages, and ordered exports open and deterministically dispose their own SQL resources.
 
@@ -98,13 +100,15 @@ flowchart LR
 
 | File | Responsibility |
 | --- | --- |
-| `SqlUtility.ps1` | Creates WinForms controls, coordinates connection/query/settings/export workflows, owns application state, binds result pages, renders status and paging, and caps displayed grid columns at 200 pixels. |
+| `SqlUtility.ps1` | Creates WinForms controls, coordinates connection/query/count/settings/export workflows, owns application and explicit-count state, binds result pages, renders status and paging, and caps displayed grid columns at 300 pixels. |
 | `modules/SqlUtility.Config.ps1` | Creates defaults, validates schema and settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
-| `modules/SqlUtility.QueryPolicy.ps1` | Tokenizes SQL, enforces the v1 single-table read-only grammar, normalizes executable SQL, extracts the table identifier, and detects top-level `ORDER BY`. |
-| `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, executes bounded queries, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |
+| `modules/SqlUtility.QueryPolicy.ps1` | Tokenizes SQL, enforces the v1 single-table read-only grammar, normalizes executable SQL, extracts the table identifier, detects top-level `ORDER BY`, and generates count-source/wrapper SQL. |
+| `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, executes bounded queries and scalar counts, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |
 | `modules/SqlUtility.Excel.ps1` | Converts neutral schema/row input into a safe Open Packaging Convention `.xlsx`, enforces worksheet/text/timeout limits, and replaces the destination only after package completion. It never owns SQL connections. |
 
 Interactive database operations return neutral `DataTable` and page-metadata objects; the database module never renders WinForms controls. Ordered export crosses a callback-based neutral schema/row boundary. Complete unordered export uses the bounded in-memory cache. This separation keeps SQL resource ownership in the database module and workbook generation in the Excel module.
+
+The query workspace uses native Windows visual styles with Segoe UI 9-point interface chrome and a Consolas 10-point SQL editor. Its result splitter remains user-draggable. Result columns are sized from the currently displayed page and automatically capped at 300 pixels; horizontal scrolling remains available. No dark theme, external resource, or custom widget framework is added.
 
 ## Configuration and Persistence
 
@@ -205,15 +209,21 @@ This client-side validator is an accidental-change safeguard, not a security san
 
 Editing the SQL text after a successful execution makes the result stale. Paging and export are disabled until **Execute** succeeds again. Every follow-up action uses the exact last successfully validated query snapshot, never unexecuted editor text.
 
+### Row status and explicit counts
+
+Status reports only information already known from the current result unless the user selects **Count**. A complete unordered cache shows its exact total (for example, `Page 1 - 500 of 723`) and disables **Count**. A truncated unordered cache shows a lower bound such as `Page 1 - 500 of 1000+` until counted. Ordered results initially show only the current page and displayed rows, such as `Page 1 - 500`; an empty first ordered page shows `Page 1 - 0 of 0` without a count query. An empty later ordered page does not establish a zero total.
+
+**Count** runs a separate scalar query using the configured Query/Export timeout. It can be expensive for large or complex result sets, and its result is a point-in-time value that can drift if data changes between it and page retrieval. The generated count preserves `DISTINCT`, `WHERE`, `GROUP BY`, and `HAVING`, and ignores only the validated top-level display `ORDER BY`; no count query, total-page calculation, or arbitrary-page navigation is implicit.
+
 ### Ordered queries
 
 For a query with a top-level `ORDER BY`, the database module appends application-controlled, parameterized `OFFSET` and `FETCH` clauses:
 
 - Visible page size: `500` rows.
 - Fetch size: `501` rows.
-- The 501st row is a sentinel used only to decide whether **Next** is available.
+- The 501st row is a sentinel used only to decide whether `>` (Next page) is available.
 - Page navigation re-executes the ordered query with the requested offset.
-- No `COUNT(*)`, total-row count, or total-page calculation is performed.
+- No count query, total-row count, or total-page calculation is performed automatically.
 
 Use a stable, preferably unique ordering. Ties or underlying data changes between page requests can change row placement.
 
@@ -329,7 +339,7 @@ These are external acceptance checks. Local automated tests do not complete them
 - One result set, one query tab, and one active server/database pair.
 - Synchronous UI with no background runspace, cancellation button, or detailed progress.
 - No query history, saved queries, result persistence, or operational log.
-- No automatic total-row or total-page count.
+- No automatic total-row or total-page count; **Count** is an explicit point-in-time operation.
 - No SQL authentication or credential storage.
 - One Excel worksheet; results above worksheet limits stop with an error.
 

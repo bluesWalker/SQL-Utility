@@ -125,7 +125,7 @@ The count must represent the number of rows produced by the exact last successfu
 - Make the generated count query alias-safe for every accepted projection shape, including wildcards, unnamed expressions, duplicate output names, scalar expressions, aggregates, and multiple selected expressions.
 - Do not broaden or reinterpret the user-facing query grammar. The application-generated wrapper is an internal execution detail applied only after the original query passes the existing policy.
 
-The validated result should expose the generated count SQL alongside `NormalizedSql` and `HasOrderBy`. The UI stores that SQL in the immutable executed-query snapshot so **Count**, paging, and export all continue to use the exact last successful execution rather than current editor text.
+Validation exposes an order-free `CountSourceSql`. After a successful page reveals the actual output-column count, QueryPolicy finalizes the alias-safe `CountSql`, which the UI stores in the last-successful-query snapshot. This supports wildcard, unnamed, and duplicate result columns while ensuring **Count**, paging, and export continue to use the exact last successful execution rather than current editor text.
 
 ### Database Execution
 

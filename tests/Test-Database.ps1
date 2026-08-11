@@ -237,4 +237,50 @@ $streamConnectionBuilder = [System.Data.SqlClient.SqlConnectionStringBuilder]::n
 Assert-Equal 's' $streamConnectionBuilder.DataSource 'Ordered streaming trims the server in its connection string'
 Assert-Equal 'd' $streamConnectionBuilder.InitialCatalog 'Ordered streaming trims the database in its connection string'
 
+$script:countCall = $null
+$count = Invoke-SqlUtilityExactCount -Server ' server ' -Database ' db ' `
+    -CountSql 'SELECT COUNT_BIG(*) FROM (...) AS q ([c1]);' `
+    -CommandTimeoutSeconds 321 -Executor {
+        param($ConnectionString, $CommandText, $CommandTimeoutSeconds)
+        $script:countCall = [pscustomobject]@{
+            ConnectionString = $ConnectionString
+            CommandText = $CommandText
+            CommandTimeoutSeconds = $CommandTimeoutSeconds
+        }
+        return [decimal] 922337203685477580
+    }
+
+Assert-Equal ([long] 922337203685477580) $count 'Exact count returns Int64'
+$countBuilder = [System.Data.SqlClient.SqlConnectionStringBuilder]::new($script:countCall.ConnectionString)
+Assert-Equal 'server' $countBuilder.DataSource 'Exact count trims and forwards server'
+Assert-Equal 'db' $countBuilder.InitialCatalog 'Exact count trims and forwards database'
+Assert-True $countBuilder.IntegratedSecurity 'Exact count uses integrated authentication'
+Assert-Equal 'SELECT COUNT_BIG(*) FROM (...) AS q ([c1]);' $script:countCall.CommandText `
+    'Exact count forwards only policy-generated SQL'
+Assert-Equal 321 $script:countCall.CommandTimeoutSeconds 'Exact count forwards query timeout'
+
+foreach ($invalidScalar in @($null, [DBNull]::Value, 'not a number', -1)) {
+    $script:countExecutorCalls = 0
+    Assert-Throws {
+        Invoke-SqlUtilityExactCount -Server 'server' -Database 'db' -CountSql 'SELECT COUNT_BIG(*) FROM q;' `
+            -CommandTimeoutSeconds 5 -Executor {
+                param($ConnectionString, $CommandText, $CommandTimeoutSeconds)
+                $script:countExecutorCalls++
+                return $invalidScalar
+            }
+    } 'System.Data.DataException' 'Exact count rejects an invalid scalar result'
+    Assert-Equal 1 $script:countExecutorCalls 'Exact count does not retry or fall back after an invalid scalar result'
+}
+
+$executorFailure = [System.InvalidOperationException]::new('count executor failed')
+$script:countExecutorCalls = 0
+Assert-Throws {
+    Invoke-SqlUtilityExactCount -Server 'server' -Database 'db' -CountSql 'SELECT COUNT_BIG(*) FROM q;' `
+        -CommandTimeoutSeconds 5 -Executor {
+            $script:countExecutorCalls++
+            throw $executorFailure
+        }
+} 'System.InvalidOperationException' 'Exact count propagates executor exceptions'
+Assert-Equal 1 $script:countExecutorCalls 'Exact count calls a failing executor only once'
+
 Complete-TestFile 'All database tests passed.'

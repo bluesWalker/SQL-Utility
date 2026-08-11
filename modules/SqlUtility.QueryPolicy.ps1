@@ -33,7 +33,32 @@ function New-SqlUtilityInvalidQueryResult {
         NormalizedSql = ''
         TableIdentifier = ''
         HasOrderBy = $false
+        CountSourceSql = ''
     }
+}
+
+function New-SqlUtilityCountSql {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string] $CountSourceSql,
+        [int] $OutputColumnCount
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CountSourceSql)) {
+        throw [System.ArgumentException]::new('Count source SQL cannot be empty.', 'CountSourceSql')
+    }
+    if ($OutputColumnCount -lt 1) {
+        throw [System.ArgumentOutOfRangeException]::new('OutputColumnCount', $OutputColumnCount, 'At least one output column is required.')
+    }
+
+    $columnAliases = @(
+        for ($index = 1; $index -le $OutputColumnCount; $index++) {
+            '[SqlUtilityCountColumn{0}]' -f $index
+        }
+    )
+
+    return "SELECT COUNT_BIG(*)`r`nFROM (`r`n{0}`r`n) AS [SqlUtilityCountSource] ({1});" -f `
+        $CountSourceSql.Trim(), ($columnAliases -join ', ')
 }
 
 function Get-SqlUtilitySqlTokens {
@@ -854,6 +879,7 @@ function Test-SqlUtilityQuery {
     }
 
     $hasOrderBy = $false
+    $topLevelOrderToken = $null
     for ($tokenIndex = 0; $tokenIndex -lt $tokens.Count; $tokenIndex++) {
         $token = $tokens[$tokenIndex]
         if ($token.Kind -ne 'Word' -or $token.Depth -ne 0) {
@@ -865,6 +891,7 @@ function Test-SqlUtilityQuery {
             }
             if ($token.Upper -eq 'ORDER') {
                 $hasOrderBy = $true
+                $topLevelOrderToken = $token
             }
         }
     }
@@ -986,11 +1013,17 @@ function Test-SqlUtilityQuery {
         }
     }
 
+    $countSourceSql = $normalizedSql
+    if ($null -ne $topLevelOrderToken) {
+        $countSourceSql = $normalizedSql.Substring(0, $topLevelOrderToken.Start).TrimEnd()
+    }
+
     return [pscustomobject][ordered]@{
         IsValid = $true
         ErrorMessage = ''
         NormalizedSql = $normalizedSql
         TableIdentifier = $Sql.Substring($tableStart, $tableEnd - $tableStart)
         HasOrderBy = [bool] $hasOrderBy
+        CountSourceSql = $countSourceSql
     }
 }

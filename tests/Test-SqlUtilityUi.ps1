@@ -21,6 +21,8 @@ function New-TestServices {
         OrderedCalls = [System.Collections.Generic.List[object]]::new()
         UnorderedCalls = [System.Collections.Generic.List[object]]::new()
         LocalPageCalls = [System.Collections.Generic.List[object]]::new()
+        BuildCountCalls = [System.Collections.Generic.List[object]]::new()
+        CountCalls = [System.Collections.Generic.List[object]]::new()
         ExportCalls = [System.Collections.Generic.List[object]]::new()
         PromptCalls = 0
         DialogCalls = 0
@@ -28,6 +30,9 @@ function New-TestServices {
         WriteError = $null
         ExecuteError = $null
         LocalPageError = $null
+        BuildCountError = $null
+        CountError = $null
+        CountResult = [long] 1234
         ExportError = $null
         PromptError = $null
         ConfirmResult = $true
@@ -38,6 +43,7 @@ function New-TestServices {
             NormalizedSql = 'SELECT Id FROM dbo.Items ORDER BY Id'
             TableIdentifier = 'dbo.Items'
             HasOrderBy = $true
+            CountSourceSql = 'SELECT Id FROM dbo.Items'
         }
         OrderedResults = @{}
         UnorderedResult = $null
@@ -118,6 +124,30 @@ function New-TestServices {
             }
             return Get-SqlUtilityLocalPage -CachedData $CachedData -PageNumber $PageNumber `
                 -IsComplete $IsComplete -IsTruncated $IsTruncated
+        }.GetNewClosure()
+        BuildCountSql = {
+            param($CountSourceSql, $OutputColumnCount)
+            [void] $recorder.BuildCountCalls.Add([pscustomobject]@{
+                CountSourceSql = $CountSourceSql
+                OutputColumnCount = $OutputColumnCount
+            })
+            if ($null -ne $recorder.BuildCountError) {
+                throw [System.InvalidOperationException]::new([string] $recorder.BuildCountError)
+            }
+            return 'generated count sql'
+        }.GetNewClosure()
+        ExecuteCount = {
+            param($Server, $Database, $CountSql, $TimeoutSeconds)
+            [void] $recorder.CountCalls.Add([pscustomobject]@{
+                Server = $Server
+                Database = $Database
+                CountSql = $CountSql
+                TimeoutSeconds = $TimeoutSeconds
+            })
+            if ($null -ne $recorder.CountError) {
+                throw [System.InvalidOperationException]::new([string] $recorder.CountError)
+            }
+            return [long] $recorder.CountResult
         }.GetNewClosure()
         ExportResult = {
             param($State, $DestinationPath)
@@ -238,9 +268,155 @@ $requiredControlNames = @(
     'WorkspacePanel', 'ActiveConnectionLabel', 'ChangeConnectionButton',
     'WorkspaceTabs', 'QueryTab', 'SettingsTab', 'UnorderedLimitNumeric',
     'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
-    'SqlEditor', 'ExecuteButton', 'ExportButton', 'PreviousPageButton',
-    'NextPageButton', 'PageStatusLabel', 'ResultsGrid'
+    'SqlEditor', 'ExecuteButton', 'ExportButton', 'CountButton', 'PreviousPageButton',
+    'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
+    'QuerySplitContainer', 'ResultsGrid'
 )
+
+# Page status text uses exact totals only when the state makes them known.
+$completeCache = New-TestDataTable -RowCount 723
+$completePage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -CachedData $completeCache `
+    -PageNumber 1 -IsComplete $true
+$completeState = [pscustomobject]@{
+    Config = [pscustomobject]@{ unorderedRowLimit = 1000 }
+    ExecutedQuery = [pscustomobject]@{ HasOrderBy = $false }
+    ExplicitTotalRowCount = $null
+}
+Assert-Equal 'Page 1 - 500 of 723' (Get-SqlUtilityPageStatusText -State $completeState -PageResult $completePage) `
+    'Complete unordered status shows exact cache total'
+
+$fourDigitCompleteCache = New-TestDataTable -RowCount 1000
+$fourDigitCompletePage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -CachedData $fourDigitCompleteCache `
+    -PageNumber 1 -IsComplete $true
+Assert-Equal 'Page 1 - 500 of 1,000' (Get-SqlUtilityPageStatusText -State $completeState -PageResult $fourDigitCompletePage) `
+    'Complete unordered status groups an exact cache total'
+
+$truncatedCache = New-TestDataTable -RowCount 1000
+$truncatedPage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -CachedData $truncatedCache `
+    -PageNumber 1 -HasNext $true -IsTruncated $true
+$truncatedState = [pscustomobject]@{
+    Config = [pscustomobject]@{ unorderedRowLimit = 1000 }
+    ExecutedQuery = [pscustomobject]@{ HasOrderBy = $false }
+    ExplicitTotalRowCount = $null
+}
+Assert-Equal 'Page 1 - 500 of 1000+' (Get-SqlUtilityPageStatusText -State $truncatedState -PageResult $truncatedPage) `
+    'Truncated unordered status marks lower bound'
+
+$orderedPage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -PageNumber 1 -HasNext $true
+$orderedState = [pscustomobject]@{
+    Config = [pscustomobject]@{ unorderedRowLimit = 1000 }
+    ExecutedQuery = [pscustomobject]@{ HasOrderBy = $true }
+    ExplicitTotalRowCount = $null
+}
+Assert-Equal 'Page 1 - 500' (Get-SqlUtilityPageStatusText -State $orderedState -PageResult $orderedPage) `
+    'Ordered status omits unknown total'
+$orderedState.ExplicitTotalRowCount = [long] 123456
+Assert-Equal 'Page 1 - 500 of 123,456' (Get-SqlUtilityPageStatusText -State $orderedState -PageResult $orderedPage) `
+    'Explicit count appears in ordered status with invariant grouping'
+
+$orderedStateWithoutCount = [pscustomobject]@{
+    Config = [pscustomobject]@{ unorderedRowLimit = 1000 }
+    ExecutedQuery = [pscustomobject]@{ HasOrderBy = $true }
+    ExplicitTotalRowCount = $null
+}
+$emptyFirstPage = New-TestPageResult -Data (New-TestDataTable -RowCount 0) -PageNumber 1
+$emptyLaterPage = New-TestPageResult -Data (New-TestDataTable -RowCount 0) -PageNumber 2 -HasPrevious $true
+Assert-Equal 'Page 1 - 0 of 0' (Get-SqlUtilityPageStatusText -State $orderedStateWithoutCount -PageResult $emptyFirstPage) `
+    'Empty ordered first page proves zero rows'
+Assert-Equal 'Page 2 - 0' (Get-SqlUtilityPageStatusText -State $orderedStateWithoutCount -PageResult $emptyLaterPage) `
+    'Empty later ordered page does not claim the total is zero'
+
+# The query workspace uses the approved native fonts, one-row action layout, accessibility, and restrained system colors.
+$appearanceHarness = New-TestServices
+$appearanceForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $appearanceHarness.Services
+try {
+    Show-TestForm $appearanceForm
+    Enter-TestWorkspace $appearanceForm
+    $appearanceForm.Size = $appearanceForm.MinimumSize
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $queryEditor = Get-TestControl $appearanceForm 'SqlEditor'
+    $executeButton = Get-TestControl $appearanceForm 'ExecuteButton'
+    $pagingHelp = Get-TestControl $appearanceForm 'PagingHelpLabel'
+    $pageStatus = Get-TestControl $appearanceForm 'PageStatusLabel'
+    $countButton = Get-TestControl $appearanceForm 'CountButton'
+    $previousButton = Get-TestControl $appearanceForm 'PreviousPageButton'
+    $nextButton = Get-TestControl $appearanceForm 'NextPageButton'
+    $exportButton = Get-TestControl $appearanceForm 'ExportButton'
+    $queryActionLayout = Get-TestControl $appearanceForm 'QueryActionLayout'
+    $querySplit = Get-TestControl $appearanceForm 'QuerySplitContainer'
+    $resultsGrid = Get-TestControl $appearanceForm 'ResultsGrid'
+    if ($null -eq $pagingHelp) {
+        $pagingHelp = @($querySplit.Panel1.Controls | ForEach-Object { $_.Controls } |
+            Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match 'Paging' } | Select-Object -First 1)
+        if ($pagingHelp.Count -gt 0) { $pagingHelp = $pagingHelp[0] }
+    }
+
+    Assert-Equal 'Segoe UI' $appearanceForm.Font.Name 'Application uses Segoe UI'
+    Assert-Equal 9 ([int] $appearanceForm.Font.SizeInPoints) 'Application uses Segoe UI 9pt'
+    Assert-Equal 'Consolas' $queryEditor.Font.Name 'SQL editor keeps Consolas'
+    Assert-Equal 10 ([int] $queryEditor.Font.SizeInPoints) 'SQL editor keeps Consolas 10pt'
+
+    Assert-Equal 'Execute' $executeButton.Text 'Execute label remains explicit'
+    Assert-Equal 'ORDER BY required for paging.' $pagingHelp.Text 'Paging help stays beside Execute'
+    Assert-Equal 'Count' $countButton.Text 'Count action is explicit'
+    Assert-Equal '<' $previousButton.Text 'Previous action uses compact label'
+    Assert-Equal '>' $nextButton.Text 'Next action uses compact label'
+    Assert-Equal 'Export' $exportButton.Text 'Export action uses compact label'
+    Assert-Equal 'Previous page' $previousButton.AccessibleName 'Previous action retains accessible meaning'
+    Assert-Equal 'Next page' $nextButton.AccessibleName 'Next action retains accessible meaning'
+    Assert-Equal 'Export to Excel' $exportButton.AccessibleName 'Export retains accessible meaning'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($countButton.AccessibleDescription)) 'Count has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($previousButton.AccessibleDescription)) 'Previous has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($nextButton.AccessibleDescription)) 'Next has an accessible description'
+    Assert-True (-not [string]::IsNullOrWhiteSpace($exportButton.AccessibleDescription)) 'Export has an accessible description'
+
+    $expectedActionOrder = @($executeButton, $pagingHelp, $pageStatus, $countButton, $previousButton, $nextButton, $exportButton)
+    Assert-Equal $true $pagingHelp.AutoEllipsis 'Paging help yields flexible width through ellipsis'
+    Assert-True ($queryActionLayout -is [System.Windows.Forms.TableLayoutPanel]) 'Query actions use a TableLayoutPanel'
+    if ($queryActionLayout -is [System.Windows.Forms.TableLayoutPanel]) {
+        Assert-Equal 1 $queryActionLayout.RowCount 'Query action layout has one row'
+        Assert-Equal 7 $queryActionLayout.ColumnCount 'Query action layout has seven control columns'
+        Assert-Equal 7 $queryActionLayout.ColumnStyles.Count 'Query action layout defines every control column'
+        Assert-Equal ([System.Windows.Forms.SizeType]::AutoSize) $queryActionLayout.ColumnStyles[0].SizeType 'Execute column autosizes'
+        Assert-Equal ([System.Windows.Forms.SizeType]::Percent) $queryActionLayout.ColumnStyles[1].SizeType 'Help column provides flexible space'
+        Assert-Equal 100 ([int] $queryActionLayout.ColumnStyles[1].Width) 'Help column owns all flexible width'
+        foreach ($columnIndex in 2..6) {
+            Assert-Equal ([System.Windows.Forms.SizeType]::AutoSize) $queryActionLayout.ColumnStyles[$columnIndex].SizeType `
+                "Query action column $columnIndex autosizes"
+        }
+        for ($columnIndex = 0; $columnIndex -lt $expectedActionOrder.Count; $columnIndex++) {
+            Assert-True ([object]::ReferenceEquals($expectedActionOrder[$columnIndex], $queryActionLayout.GetControlFromPosition($columnIndex, 0))) `
+                "Query action column $columnIndex contains the approved control"
+        }
+        Assert-True ($queryActionLayout.Height -lt 64) 'One-row query action layout is shorter than the old panel'
+        foreach ($control in $expectedActionOrder) {
+            Assert-True ($control.Left -ge 0 -and $control.Top -ge 0 -and
+                $control.Right -le $queryActionLayout.ClientSize.Width -and
+                $control.Bottom -le $queryActionLayout.ClientSize.Height) `
+                "$($control.Name) fits in the action row at minimum form size"
+        }
+    }
+
+    $applicationAccent = [System.Drawing.Color]::FromArgb(0, 120, 215)
+    Assert-Equal $applicationAccent $executeButton.BackColor 'Execute uses the restrained blue application accent'
+    Assert-Equal ([System.Drawing.Color]::White) $executeButton.ForeColor 'Execute accent keeps readable foreground text'
+    Assert-Equal ([System.Windows.Forms.FlatStyle]::Flat) $executeButton.FlatStyle 'Execute uses a restrained flat border'
+    foreach ($nativeButton in @($countButton, $previousButton, $nextButton, $exportButton)) {
+        Assert-Equal $true $nativeButton.UseVisualStyleBackColor "$($nativeButton.Name) keeps native button styling"
+        Assert-Equal ([System.Windows.Forms.FlatStyle]::Standard) $nativeButton.FlatStyle "$($nativeButton.Name) keeps standard light styling"
+    }
+    Assert-Equal ([System.Drawing.SystemColors]::Window) $resultsGrid.DefaultCellStyle.BackColor 'Grid cells use the system window surface'
+    Assert-Equal ([System.Drawing.SystemColors]::WindowText) $resultsGrid.DefaultCellStyle.ForeColor 'Grid cells use system window text'
+    Assert-Equal ([System.Drawing.SystemColors]::Control) $resultsGrid.ColumnHeadersDefaultCellStyle.BackColor 'Grid headers use a quiet system surface'
+    Assert-Equal ([System.Drawing.SystemColors]::ControlText) $resultsGrid.ColumnHeadersDefaultCellStyle.ForeColor 'Grid headers use dark system text'
+    Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $querySplit.FixedPanel 'Query splitter keeps both panels flexible'
+    Assert-Equal $false $querySplit.IsSplitterFixed 'Query splitter remains draggable'
+}
+finally {
+    $appearanceForm.Close()
+    $appearanceForm.Dispose()
+}
 
 # Initial stage, stable control contract, saved-pair selection, and settings bounds.
 $initialHarness = New-TestServices
@@ -258,9 +434,11 @@ try {
     $unorderedNumeric = Get-TestControl $initialForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $initialForm 'QueryExportTimeoutNumeric'
     $settingsTab = Get-TestControl $initialForm 'SettingsTab'
+    $countButton = Get-TestControl $initialForm 'CountButton'
 
     Assert-Equal $true $connectionPanel.Visible 'Connection stage is visible first'
     Assert-Equal $false $workspacePanel.Visible 'Workspace stage is hidden first'
+    Assert-Equal $false $countButton.Enabled 'Count starts disabled before any result'
     Assert-Equal '' $serverTextBox.Text 'Server starts blank on every form creation'
     Assert-Equal '' $databaseTextBox.Text 'Database starts blank on every form creation'
     Assert-Equal 2 $savedList.Items.Count 'Saved pairs populate the list'
@@ -456,6 +634,7 @@ $invalidHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
     NormalizedSql = ''
     TableIdentifier = ''
     HasOrderBy = $false
+    CountSourceSql = ''
 }
 $invalidForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $invalidHarness.Services
 try {
@@ -464,6 +643,7 @@ try {
     $priorData = New-TestDataTable -RowCount 1
     $invalidForm.Tag.ExecutedQuery = [pscustomobject]@{ OriginalEditorSql = 'old'; NormalizedSql = 'old'; HasOrderBy = $true }
     $invalidForm.Tag.CurrentResult = New-TestPageResult -Data $priorData -PageNumber 1 -HasNext $true
+    $invalidForm.Tag.ExplicitTotalRowCount = [long] 77
     Show-SqlUtilityPage -Form $invalidForm -PageResult $invalidForm.Tag.CurrentResult
     (Get-TestControl $invalidForm 'SqlEditor').Text = 'DELETE FROM dbo.Items'
     (Get-TestControl $invalidForm 'ExecuteButton').PerformClick()
@@ -474,6 +654,7 @@ try {
     Assert-Equal $null $invalidForm.Tag.ExecutedQuery 'Invalid policy clears executed snapshot'
     Assert-Equal $null $invalidForm.Tag.CurrentResult 'Invalid policy clears result state'
     Assert-Equal 0 $invalidForm.Tag.CurrentPage 'Invalid policy clears page state'
+    Assert-Equal $null $invalidForm.Tag.ExplicitTotalRowCount 'Invalid policy clears prior explicit total'
     Assert-Equal $null (Get-TestControl $invalidForm 'ResultsGrid').DataSource 'Invalid policy clears result grid'
     Assert-Equal 'Only one read-only SELECT is allowed.' $invalidHarness.Recorder.Messages[0].Text 'Invalid policy displays concise validator message'
 }
@@ -482,8 +663,58 @@ finally {
     $invalidForm.Dispose()
 }
 
+# A count-builder failure is an execution failure and publishes no partial snapshot.
+$countBuilderFailureHarness = New-TestServices
+$countBuilderFailureHarness.Recorder.BuildCountError = 'cannot build count'
+$countBuilderFailureHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 1) -PageNumber 1
+$countBuilderFailureForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $countBuilderFailureHarness.Services
+try {
+    Show-TestForm $countBuilderFailureForm
+    Enter-TestWorkspace $countBuilderFailureForm
+    $countBuilderFailureForm.Tag.ExplicitTotalRowCount = [long] 12
+    (Get-TestControl $countBuilderFailureForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $countBuilderFailureForm 'ExecuteButton').PerformClick()
+    Assert-Equal 1 $countBuilderFailureHarness.Recorder.BuildCountCalls.Count 'Execute builds count SQL after the first page succeeds'
+    Assert-Equal $null $countBuilderFailureForm.Tag.ExecutedQuery 'Count-builder failure clears executed snapshot'
+    Assert-Equal $null $countBuilderFailureForm.Tag.CurrentResult 'Count-builder failure clears result state'
+    Assert-Equal $null $countBuilderFailureForm.Tag.ExplicitTotalRowCount 'Count-builder failure clears explicit total'
+    Assert-Equal 1 @($countBuilderFailureHarness.Recorder.Messages | Where-Object { $_.Caption -eq 'Query Error' -and $_.Icon -eq 'Error' }).Count `
+        'Count-builder failure reports query execution error'
+}
+finally {
+    $countBuilderFailureForm.Close()
+    $countBuilderFailureForm.Dispose()
+}
+
+# An empty ordered first page proves zero rows without suppressing explicit Count.
+$emptyOrderedHarness = New-TestServices
+$emptyOrderedHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 0) -PageNumber 1
+$emptyOrderedForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $emptyOrderedHarness.Services
+try {
+    Show-TestForm $emptyOrderedForm
+    Enter-TestWorkspace $emptyOrderedForm
+    (Get-TestControl $emptyOrderedForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $emptyOrderedForm 'ExecuteButton').PerformClick()
+    Assert-Equal 'Page 1 - 0 of 0' (Get-TestControl $emptyOrderedForm 'PageStatusLabel').Text `
+        'Empty ordered first page displays the proved zero total'
+    Assert-Equal $true (Get-TestControl $emptyOrderedForm 'CountButton').Enabled `
+        'Empty ordered first page leaves Count enabled'
+}
+finally {
+    $emptyOrderedForm.Close()
+    $emptyOrderedForm.Dispose()
+}
+
 # Ordered execution binds page metadata, reexecutes the normalized snapshot, caps grid widths, and becomes stale on edit.
 $orderedHarness = New-TestServices
+$orderedHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
+    IsValid = $true
+    ErrorMessage = ''
+    NormalizedSql = 'SELECT Id, Name FROM dbo.Items ORDER BY Id'
+    TableIdentifier = 'dbo.Items'
+    HasOrderBy = $true
+    CountSourceSql = 'SELECT Id, Name FROM dbo.Items'
+}
 $orderedPage1Data = New-TestDataTable -RowCount 500 -TextLength 400
 $orderedPage2Data = New-TestDataTable -RowCount 2
 $orderedHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data $orderedPage1Data -PageNumber 1 -HasNext $true
@@ -498,18 +729,25 @@ try {
     $nextButton = Get-TestControl $orderedForm 'NextPageButton'
     $exportButton = Get-TestControl $orderedForm 'ExportButton'
     $resultsGrid = Get-TestControl $orderedForm 'ResultsGrid'
-    $originalEditorSql = " SELECT Id FROM dbo.Items`r`nORDER BY Id; "
+    $countButton = Get-TestControl $orderedForm 'CountButton'
+    $originalEditorSql = " SELECT Id, Name FROM dbo.Items`r`nORDER BY Id; "
     $sqlEditor.Text = $originalEditorSql
     $executeButton.PerformClick()
 
     Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Execute calls ordered service once'
     Assert-Equal 'QueryServer' $orderedHarness.Recorder.OrderedCalls[0].Server 'Ordered Execute uses active server'
     Assert-Equal 'QueryDatabase' $orderedHarness.Recorder.OrderedCalls[0].Database 'Ordered Execute uses active database'
-    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[0].Sql 'Ordered Execute uses normalized SQL'
+    Assert-Equal 'SELECT Id, Name FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[0].Sql 'Ordered Execute uses normalized SQL'
     Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls[0].PageNumber 'Ordered Execute requests page one'
     Assert-Equal 120 $orderedHarness.Recorder.OrderedCalls[0].TimeoutSeconds 'Ordered Execute uses configured timeout'
+    Assert-Equal 'SELECT Id, Name FROM dbo.Items' $orderedHarness.Recorder.BuildCountCalls[0].CountSourceSql `
+        'Execute forwards the validated order-free count source'
+    Assert-Equal 2 $orderedHarness.Recorder.BuildCountCalls[0].OutputColumnCount `
+        'Execute finalizes count SQL from the actual result schema'
     Assert-Equal $originalEditorSql $orderedForm.Tag.ExecutedQuery.OriginalEditorSql 'Ordered Execute preserves exact editor snapshot'
-    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Ordered Execute stores normalized snapshot'
+    Assert-Equal 'SELECT Id, Name FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Ordered Execute stores normalized snapshot'
+    Assert-Equal 'generated count sql' $orderedForm.Tag.ExecutedQuery.CountSql 'Successful snapshot stores policy-generated count SQL'
+    Assert-Equal $null $orderedForm.Tag.ExplicitTotalRowCount 'A new successful execution starts without an explicit count'
     Assert-Equal 500 $resultsGrid.Rows.Count 'Ordered page binds 500 displayed rows'
     Assert-Equal $true $resultsGrid.ReadOnly 'Results grid is read-only'
     Assert-Equal $false $resultsGrid.AllowUserToAddRows 'Results grid prevents row insertion'
@@ -517,17 +755,60 @@ try {
     Assert-Equal $false $previousButton.Enabled 'Ordered page one disables Previous'
     Assert-Equal $true $nextButton.Enabled 'Ordered page one enables Next from sentinel metadata'
     Assert-Equal $true $exportButton.Enabled 'Fresh ordered result enables export'
-    Assert-Equal 'Page 1 - 500 rows' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered status reports page and displayed rows'
+    Assert-Equal $true $countButton.Enabled 'Fresh ordered result enables Count'
+    Assert-Equal 0 $orderedHarness.Recorder.CountCalls.Count 'Execute never runs an automatic count'
+    Assert-Equal 'Page 1 - 500' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered status reports page and displayed rows'
     foreach ($column in $resultsGrid.Columns) {
-        Assert-True ($column.Width -le 200) "Grid caps $($column.Name) at 200 pixels"
+        Assert-True ($column.Width -le 300) 'Result columns are capped at 300 pixels'
         Assert-Equal ([System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None) $column.AutoSizeMode "Grid leaves $($column.Name) fixed after sizing"
     }
+    $longValueColumn = $resultsGrid.Columns['Description']
+    Assert-Equal 300 $longValueColumn.Width 'A long result column reaches the new cap'
 
+    $resultBeforeCount = $orderedForm.Tag.CurrentResult
+    $gridDataBeforeCount = $resultsGrid.DataSource
+    $countButton.PerformClick()
+    Assert-Equal 1 $orderedHarness.Recorder.CountCalls.Count 'Count executes only after explicit user action'
+    Assert-Equal 'QueryServer' $orderedHarness.Recorder.CountCalls[0].Server 'Count uses active server snapshot'
+    Assert-Equal 'QueryDatabase' $orderedHarness.Recorder.CountCalls[0].Database 'Count uses active database snapshot'
+    Assert-Equal $orderedForm.Tag.ExecutedQuery.CountSql $orderedHarness.Recorder.CountCalls[0].CountSql `
+        'Count executes only the stored policy-generated SQL'
+    Assert-Equal $orderedForm.Tag.Config.queryExportTimeoutSeconds $orderedHarness.Recorder.CountCalls[0].TimeoutSeconds `
+        'Count uses the Query/Export timeout'
+    Assert-Equal ([long] 1234) $orderedForm.Tag.ExplicitTotalRowCount 'Count success stores the exact total'
+    Assert-Equal 'Page 1 - 500 of 1,234' (Get-TestControl $orderedForm 'PageStatusLabel').Text `
+        'Count success updates status with grouped exact total'
+    Assert-True ([object]::ReferenceEquals($resultBeforeCount, $orderedForm.Tag.CurrentResult)) `
+        'Count success preserves the result object'
+    Assert-True ([object]::ReferenceEquals($gridDataBeforeCount, $resultsGrid.DataSource)) `
+        'Count success does not rebind the grid'
+    Assert-Equal $true $nextButton.Enabled 'Count success preserves pager eligibility'
+    Assert-Equal $true $exportButton.Enabled 'Count success preserves export eligibility'
+    Assert-Equal $true $countButton.Enabled 'Count remains enabled for refresh'
+
+    $orderedHarness.Recorder.CountError = 'count denied'
+    $countButton.PerformClick()
+    Assert-Equal ([long] 1234) $orderedForm.Tag.ExplicitTotalRowCount 'Count failure preserves prior exact total'
+    Assert-Equal 'Page 1 - 500 of 1,234' (Get-TestControl $orderedForm 'PageStatusLabel').Text `
+        'Count failure preserves page status'
+    Assert-True ([object]::ReferenceEquals($resultBeforeCount, $orderedForm.Tag.CurrentResult)) `
+        'Count failure preserves the result object'
+    Assert-True ([object]::ReferenceEquals($gridDataBeforeCount, $resultsGrid.DataSource)) `
+        'Count failure preserves grid data'
+    Assert-Equal $true $nextButton.Enabled 'Count failure preserves pager eligibility'
+    Assert-Equal $true $exportButton.Enabled 'Count failure preserves export eligibility'
+    Assert-Equal $true $countButton.Enabled 'Count failure leaves Count enabled for retry'
+    Assert-Equal 1 @($orderedHarness.Recorder.Messages | Where-Object { $_.Caption -eq 'Row Count Failed' -and $_.Icon -eq 'Error' }).Count `
+        'Count failure reports a row-count error'
+    $orderedHarness.Recorder.CountError = $null
+
+    $countCallsBeforePaging = $orderedHarness.Recorder.CountCalls.Count
     $nextButton.PerformClick()
     Assert-Equal 2 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Next reexecutes query'
-    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[1].Sql 'Ordered Next uses exact normalized executed snapshot'
+    Assert-Equal $countCallsBeforePaging $orderedHarness.Recorder.CountCalls.Count 'Paging never runs an automatic count'
+    Assert-Equal 'SELECT Id, Name FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[1].Sql 'Ordered Next uses exact normalized executed snapshot'
     Assert-Equal 2 $orderedHarness.Recorder.OrderedCalls[1].PageNumber 'Ordered Next requests target page'
-    Assert-Equal 'Page 2 - 2 rows' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered Next updates page status'
+    Assert-Equal 'Page 2 - 2 of 1,234' (Get-TestControl $orderedForm 'PageStatusLabel').Text 'Ordered Next updates page status'
     $previousButton.PerformClick()
     Assert-Equal 3 $orderedHarness.Recorder.OrderedCalls.Count 'Ordered Previous reexecutes query'
     Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls[2].PageNumber 'Ordered Previous requests target page'
@@ -537,11 +818,19 @@ try {
     [System.Windows.Forms.Application]::DoEvents()
     Assert-Equal $true $orderedForm.Tag.IsQueryStale 'Editor change marks successful result stale'
     Assert-Equal $snapshotBeforeEdit $orderedForm.Tag.ExecutedQuery 'Editor change retains executed snapshot object'
-    Assert-Equal 'SELECT Id FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Editor change never mutates normalized snapshot'
+    Assert-Equal 'SELECT Id, Name FROM dbo.Items ORDER BY Id' $orderedForm.Tag.ExecutedQuery.NormalizedSql 'Editor change never mutates normalized snapshot'
     Assert-Equal 500 $resultsGrid.Rows.Count 'Editor change preserves displayed rows'
+    Assert-Equal ([long] 1234) $orderedForm.Tag.ExplicitTotalRowCount 'Editor change preserves point-in-time total'
+    Assert-Equal 'Page 1 - 500 of 1,234' (Get-TestControl $orderedForm 'PageStatusLabel').Text `
+        'Editor change keeps displayed point-in-time total visible'
     Assert-Equal $false $previousButton.Enabled 'Stale result disables Previous'
     Assert-Equal $false $nextButton.Enabled 'Stale result disables Next'
     Assert-Equal $false $exportButton.Enabled 'Stale result disables Export'
+    Assert-Equal $false $countButton.Enabled 'Stale result disables Count'
+
+    $sqlEditor.Text = $originalEditorSql
+    $executeButton.PerformClick()
+    Assert-Equal $null $orderedForm.Tag.ExplicitTotalRowCount 'New successful execution clears the explicit total'
 }
 finally {
     $orderedForm.Close()
@@ -556,6 +845,7 @@ $unorderedHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
     NormalizedSql = 'SELECT Id FROM dbo.Items'
     TableIdentifier = 'dbo.Items'
     HasOrderBy = $false
+    CountSourceSql = 'SELECT Id FROM dbo.Items'
 }
 $unorderedCache = New-TestDataTable -RowCount 650
 $unorderedFirstPage = Get-SqlUtilityLocalPage -CachedData $unorderedCache -PageNumber 1 -IsComplete $true -IsTruncated $false
@@ -573,13 +863,15 @@ try {
     Assert-Equal 0 $unorderedHarness.Recorder.OrderedCalls.Count 'Unordered Execute never calls ordered service'
     Assert-Equal 0 $unorderedHarness.Recorder.Messages.Count 'Complete unordered result shows no truncation popup'
     Assert-Equal $true (Get-TestControl $unorderedForm 'ExportButton').Enabled 'Complete unordered result enables export'
+    Assert-Equal $false (Get-TestControl $unorderedForm 'CountButton').Enabled `
+        'Complete unordered result disables Count because its cache is exact'
 
     (Get-TestControl $unorderedForm 'NextPageButton').PerformClick()
     Assert-Equal 1 $unorderedHarness.Recorder.UnorderedCalls.Count 'Unordered Next never queries SQL again'
     Assert-Equal 1 $unorderedHarness.Recorder.LocalPageCalls.Count 'Unordered Next uses local-page service'
     Assert-True ([object]::ReferenceEquals($unorderedCache, $unorderedHarness.Recorder.LocalPageCalls[0].CachedData)) 'Unordered Next uses retained cache object'
     Assert-Equal 2 $unorderedHarness.Recorder.LocalPageCalls[0].PageNumber 'Unordered Next requests local page two'
-    Assert-Equal 'Page 2 - 150 rows' (Get-TestControl $unorderedForm 'PageStatusLabel').Text 'Unordered local page shows remaining rows'
+    Assert-Equal 'Page 2 - 150 of 650' (Get-TestControl $unorderedForm 'PageStatusLabel').Text 'Unordered local page shows remaining rows'
 
     (Get-TestControl $unorderedForm 'ExportButton').PerformClick()
     Assert-Equal 1 $unorderedHarness.Recorder.PromptCalls 'Export opens save prompt once'
@@ -602,6 +894,7 @@ $truncatedHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
     NormalizedSql = 'SELECT Id FROM dbo.Items'
     TableIdentifier = 'dbo.Items'
     HasOrderBy = $false
+    CountSourceSql = 'SELECT Id FROM dbo.Items'
 }
 $truncatedCache = New-TestDataTable -RowCount 1000
 $truncatedHarness.Recorder.UnorderedResult = Get-SqlUtilityLocalPage -CachedData $truncatedCache -PageNumber 1 -IsComplete $false -IsTruncated $true
@@ -614,9 +907,27 @@ try {
     Assert-Equal 1000 $truncatedForm.Tag.CurrentResult.CachedData.Rows.Count 'Truncated result retains first configured maximum'
     Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Truncated result asks for ORDER BY exactly once'
     Assert-Equal $false (Get-TestControl $truncatedForm 'ExportButton').Enabled 'Truncated result disables export'
+    Assert-Equal $true (Get-TestControl $truncatedForm 'CountButton').Enabled 'Truncated result enables Count'
+    $truncatedForm.Tag.IsBusy = $true
+    Update-SqlUtilityQueryActionState -Form $truncatedForm
+    Assert-Equal $false (Get-TestControl $truncatedForm 'CountButton').Enabled 'Busy result disables Count'
+    $truncatedForm.Tag.IsBusy = $false
+    Update-SqlUtilityQueryActionState -Form $truncatedForm
+
+    (Get-TestControl $truncatedForm 'WorkspaceTabs').SelectedTab = Get-TestControl $truncatedForm 'SettingsTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $truncatedForm 'UnorderedLimitNumeric').Value = 1500
+    (Get-TestControl $truncatedForm 'SaveSettingsButton').PerformClick()
+    Assert-Equal 1500 $truncatedForm.Tag.Config.unorderedRowLimit 'Saved settings update the current unordered row limit'
+    (Get-TestControl $truncatedForm 'WorkspaceTabs').SelectedTab = Get-TestControl $truncatedForm 'QueryTab'
+    [System.Windows.Forms.Application]::DoEvents()
     (Get-TestControl $truncatedForm 'NextPageButton').PerformClick()
     Assert-Equal 1 $truncatedHarness.Recorder.LocalPageCalls.Count 'Truncated result pages locally'
+    Assert-True ([object]::ReferenceEquals($truncatedCache, $truncatedHarness.Recorder.LocalPageCalls[0].CachedData)) `
+        'Truncated local page preserves the cache retained by the earlier execution'
     Assert-Equal 500 (Get-TestControl $truncatedForm 'ResultsGrid').Rows.Count 'Truncated second page retains remaining bounded rows'
+    Assert-Equal 'Page 2 - 500 of 1000+' (Get-TestControl $truncatedForm 'PageStatusLabel').Text `
+        'Truncated local page keeps the lower bound retained by the earlier execution after settings change'
     Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Local paging does not repeat truncation popup'
 
     $truncatedHarness.Recorder.PromptPath = 'C:\exports\must-not-export.xlsx'
@@ -690,6 +1001,7 @@ $localPageErrorHarness.Recorder.ValidationResult = [pscustomobject][ordered]@{
     NormalizedSql = 'SELECT Id FROM dbo.Items'
     TableIdentifier = 'dbo.Items'
     HasOrderBy = $false
+    CountSourceSql = 'SELECT Id FROM dbo.Items'
 }
 $localPageErrorConfig = New-TestConfig
 $localPageErrorConfig.unorderedRowLimit = 1500
@@ -856,6 +1168,7 @@ try {
     $changeForm.Tag.CurrentResult = $sentinelResult
     $changeForm.Tag.CurrentPage = 4
     $changeForm.Tag.IsQueryStale = $true
+    $changeForm.Tag.ExplicitTotalRowCount = [long] 88
     $changeHarness.Recorder.ConfirmResult = $false
     (Get-TestControl $changeForm 'ChangeConnectionButton').PerformClick()
     Assert-Equal 'ActiveServer' $changeForm.Tag.ActiveServer 'Canceled change preserves active server'
@@ -871,6 +1184,7 @@ try {
     Assert-Equal $null $changeForm.Tag.CurrentResult 'Confirmed change clears result state'
     Assert-Equal 0 $changeForm.Tag.CurrentPage 'Confirmed change clears page state'
     Assert-Equal $false $changeForm.Tag.IsQueryStale 'Confirmed change clears stale state'
+    Assert-Equal $null $changeForm.Tag.ExplicitTotalRowCount 'Confirmed change clears explicit total state'
     Assert-Equal '' (Get-TestControl $changeForm 'ServerTextBox').Text 'Confirmed change blanks server input'
     Assert-Equal '' (Get-TestControl $changeForm 'DatabaseTextBox').Text 'Confirmed change blanks database input'
     Assert-Equal 3 (Get-TestControl $changeForm 'SavedConnectionsList').Items.Count 'Confirmed change retains saved pairs including the successful active pair'

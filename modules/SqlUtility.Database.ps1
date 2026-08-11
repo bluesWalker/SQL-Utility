@@ -171,6 +171,75 @@ function Invoke-SqlUtilityTableExecutor {
     }
 }
 
+function Invoke-SqlUtilityScalarExecutor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $ConnectionString,
+        [Parameter(Mandatory = $true)][string] $CommandText,
+        [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds
+    )
+
+    $connection = [System.Data.SqlClient.SqlConnection]::new($ConnectionString)
+    try {
+        $connection.Open()
+        $command = $connection.CreateCommand()
+        try {
+            $command.CommandText = $CommandText
+            $command.CommandTimeout = $CommandTimeoutSeconds
+            return $command.ExecuteScalar()
+        }
+        finally {
+            if ($null -ne $command) { $command.Dispose() }
+        }
+    }
+    finally {
+        $connection.Dispose()
+    }
+}
+
+function Invoke-SqlUtilityExactCount {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Server,
+        [Parameter(Mandatory = $true)][string] $Database,
+        [Parameter(Mandatory = $true)][string] $CountSql,
+        [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [scriptblock] $Executor
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CountSql)) {
+        throw [System.ArgumentException]::new('Count SQL must not be blank.', 'CountSql')
+    }
+    if ($CommandTimeoutSeconds -lt 1) {
+        throw [System.ArgumentOutOfRangeException]::new('CommandTimeoutSeconds', 'Command timeout must be at least 1 second.')
+    }
+
+    $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    if ($null -eq $Executor) {
+        $value = Invoke-SqlUtilityScalarExecutor -ConnectionString $connectionString -CommandText $CountSql `
+            -CommandTimeoutSeconds $CommandTimeoutSeconds
+    }
+    else {
+        $value = & $Executor $connectionString $CountSql $CommandTimeoutSeconds
+    }
+
+    if ($null -eq $value -or $value -eq [DBNull]::Value) {
+        throw [System.Data.DataException]::new('The row-count query did not return a value.')
+    }
+
+    try {
+        $count = [System.Convert]::ToInt64($value, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        throw [System.Data.DataException]::new('The row-count query returned an invalid value.', $_.Exception)
+    }
+
+    if ($count -lt 0) {
+        throw [System.Data.DataException]::new('The row-count query returned a negative value.')
+    }
+    return [long] $count
+}
+
 function Invoke-SqlUtilityConnectionTest {
     [CmdletBinding()]
     param(

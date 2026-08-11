@@ -466,7 +466,7 @@ function Get-SqlUtilityPageStatusText {
     }
     if (-not $hasOrderBy -and [bool] $PageResult.IsComplete -and -not [bool] $PageResult.IsTruncated -and
         $null -ne $PageResult.CachedData) {
-        return '{0} of {1}' -f $prefix, ([int] $PageResult.CachedData.Rows.Count).ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        return '{0} of {1}' -f $prefix, ([int] $PageResult.CachedData.Rows.Count).ToString('N0', [System.Globalization.CultureInfo]::InvariantCulture)
     }
     if (-not $hasOrderBy -and [bool] $PageResult.IsTruncated) {
         return '{0} of {1}+' -f $prefix, ([int] $State.Config.unorderedRowLimit).ToString([System.Globalization.CultureInfo]::InvariantCulture)

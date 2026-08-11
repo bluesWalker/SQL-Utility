@@ -284,6 +284,12 @@ $completeState = [pscustomobject]@{
 Assert-Equal 'Page 1 - 500 of 723' (Get-SqlUtilityPageStatusText -State $completeState -PageResult $completePage) `
     'Complete unordered status shows exact cache total'
 
+$fourDigitCompleteCache = New-TestDataTable -RowCount 1000
+$fourDigitCompletePage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -CachedData $fourDigitCompleteCache `
+    -PageNumber 1 -IsComplete $true
+Assert-Equal 'Page 1 - 500 of 1,000' (Get-SqlUtilityPageStatusText -State $completeState -PageResult $fourDigitCompletePage) `
+    'Complete unordered status groups an exact cache total'
+
 $truncatedCache = New-TestDataTable -RowCount 1000
 $truncatedPage = New-TestPageResult -Data (New-TestDataTable -RowCount 500) -CachedData $truncatedCache `
     -PageNumber 1 -HasNext $true -IsTruncated $true

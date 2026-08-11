@@ -209,13 +209,13 @@ function Get-SqlUtilitySqlTokens {
 
         $start = $index
         $kind = 'Symbol'
+        $tokenDepth = $depth
         if ($character -eq ';') {
             $kind = 'Semicolon'
             $index++
         }
         elseif ($character -eq '(') {
             $index++
-            $tokenDepth = $depth
             $depth++
         }
         elseif ($character -eq ')') {
@@ -230,9 +230,6 @@ function Get-SqlUtilitySqlTokens {
             $index++
         }
 
-        if ($null -eq $tokenDepth) {
-            $tokenDepth = $depth
-        }
         $text = $Sql.Substring($start, $index - $start)
         [void] $tokens.Add([pscustomobject]@{
             Text = $text
@@ -242,7 +239,6 @@ function Get-SqlUtilitySqlTokens {
             Start = $start
             End = $index
         })
-        Remove-Variable tokenDepth -ErrorAction SilentlyContinue
     }
 
     if ($depth -ne 0) {

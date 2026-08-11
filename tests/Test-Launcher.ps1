@@ -66,6 +66,10 @@ try {
     Assert-True ($null -ne (Get-Command New-SqlUtilityMainForm -ErrorAction SilentlyContinue)) `
         'SqlUtility.ps1 resolves its production modules outside the application directory'
 
+    $entryPointValidation = Test-SqlUtilityQuery -Sql 'SELECT a, b FROM dbo.Items WHERE a >= 1'
+    Assert-True $entryPointValidation.IsValid `
+        'SqlUtility.ps1 validates realistic symbol tokens under its strict-mode runtime'
+
     $launcherPath = Join-Path $projectRoot 'StartSqlUtility.cmd'
     if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
         $launcherCopy = Join-Path $launcherFolder 'StartSqlUtility.cmd'

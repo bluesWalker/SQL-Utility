@@ -913,9 +913,21 @@ try {
     Assert-Equal $false (Get-TestControl $truncatedForm 'CountButton').Enabled 'Busy result disables Count'
     $truncatedForm.Tag.IsBusy = $false
     Update-SqlUtilityQueryActionState -Form $truncatedForm
+
+    (Get-TestControl $truncatedForm 'WorkspaceTabs').SelectedTab = Get-TestControl $truncatedForm 'SettingsTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $truncatedForm 'UnorderedLimitNumeric').Value = 1500
+    (Get-TestControl $truncatedForm 'SaveSettingsButton').PerformClick()
+    Assert-Equal 1500 $truncatedForm.Tag.Config.unorderedRowLimit 'Saved settings update the current unordered row limit'
+    (Get-TestControl $truncatedForm 'WorkspaceTabs').SelectedTab = Get-TestControl $truncatedForm 'QueryTab'
+    [System.Windows.Forms.Application]::DoEvents()
     (Get-TestControl $truncatedForm 'NextPageButton').PerformClick()
     Assert-Equal 1 $truncatedHarness.Recorder.LocalPageCalls.Count 'Truncated result pages locally'
+    Assert-True ([object]::ReferenceEquals($truncatedCache, $truncatedHarness.Recorder.LocalPageCalls[0].CachedData)) `
+        'Truncated local page preserves the cache retained by the earlier execution'
     Assert-Equal 500 (Get-TestControl $truncatedForm 'ResultsGrid').Rows.Count 'Truncated second page retains remaining bounded rows'
+    Assert-Equal 'Page 2 - 500 of 1000+' (Get-TestControl $truncatedForm 'PageStatusLabel').Text `
+        'Truncated local page keeps the lower bound retained by the earlier execution after settings change'
     Assert-Equal 1 @($truncatedHarness.Recorder.Messages | Where-Object Text -match 'ORDER BY').Count 'Local paging does not repeat truncation popup'
 
     $truncatedHarness.Recorder.PromptPath = 'C:\exports\must-not-export.xlsx'

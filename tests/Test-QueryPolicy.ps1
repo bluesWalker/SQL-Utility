@@ -33,6 +33,16 @@ $accepted = @(
     @{ Name = 'CAST length type and implicit alias'; Sql = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items' }
     @{ Name = 'CAST precision and scale type'; Sql = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items' }
     @{ Name = 'TRY_CAST maximum length type'; Sql = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items' }
+    @{ Name = 'bare inner join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'explicit inner join'; Sql = 'SELECT i.Id FROM dbo.Items AS i INNER JOIN dbo.Other AS o ON o.Id = i.Id'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id FROM dbo.Items AS i INNER JOIN dbo.Other AS o ON o.Id = i.Id' }
+    @{ Name = 'left join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'left outer join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT OUTER JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT OUTER JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'mixed chained joins'; Sql = "SELECT o.Id, c.Name, r.RegionName FROM dbo.Orders o LEFT OUTER JOIN dbo.Customers c ON c.Id = o.CustomerId AND c.Enabled = 1 INNER JOIN dbo.Regions r ON r.Id = c.RegionId WHERE o.CreatedAt >= '2026-01-01' ORDER BY o.Id"; Table = 'dbo.Orders'; Ordered = $true; Normalized = "SELECT o.Id, c.Name, r.RegionName FROM dbo.Orders o LEFT OUTER JOIN dbo.Customers c ON c.Id = o.CustomerId AND c.Enabled = 1 INNER JOIN dbo.Regions r ON r.Id = c.RegionId WHERE o.CreatedAt >= '2026-01-01' ORDER BY o.Id" }
+    @{ Name = 'quoted joined sources and aliases'; Sql = 'SELECT "i"."Id" FROM [dbo].[Items] AS [i] INNER JOIN "dbo"."Other" AS "o" ON "o"."Id" = [i].[Id]'; Table = '[dbo].[Items]'; Ordered = $false; Normalized = 'SELECT "i"."Id" FROM [dbo].[Items] AS [i] INNER JOIN "dbo"."Other" AS "o" ON "o"."Id" = [i].[Id]' }
+    @{ Name = 'compound range and function join'; Sql = "SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON (o.Minimum <= i.Score AND i.Score < o.Maximum) OR LEFT(o.Code, 2) = LEFT(i.Code, 2)"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON (o.Minimum <= i.Score AND i.Score < o.Maximum) OR LEFT(o.Code, 2) = LEFT(i.Code, 2)" }
+    @{ Name = 'grouped joined query'; Sql = 'SELECT c.Id, COUNT(*) AS ItemCount FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId GROUP BY c.Id HAVING COUNT(*) > 1 ORDER BY c.Id;'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT c.Id, COUNT(*) AS ItemCount FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId GROUP BY c.Id HAVING COUNT(*) > 1 ORDER BY c.Id' }
+    @{ Name = 'joined final semicolon before line comment'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id; -- trailing JOIN comment'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id -- trailing JOIN comment' }
+    @{ Name = 'joined final semicolon before block comment'; Sql = "SELECT i.Id FROM dbo.Items i LEFT JOIN dbo.Other o ON o.Id = i.Id ;`r`n/* trailing RIGHT JOIN comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT i.Id FROM dbo.Items i LEFT JOIN dbo.Other o ON o.Id = i.Id `r`n/* trailing RIGHT JOIN comment ; */  " }
 )
 
 foreach ($case in $accepted) {
@@ -73,6 +83,22 @@ $orderInExpression = Test-SqlUtilityQuery -Sql 'SELECT ROW_NUMBER() OVER (ORDER 
 Assert-Equal 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' $orderInExpression.CountSourceSql `
     'ORDER BY inside an expression is not the truncation point'
 
+$orderedJoin = Test-SqlUtilityQuery -Sql @'
+SELECT o.Id, c.Name
+FROM dbo.Orders o
+LEFT JOIN dbo.Customers c ON c.Id = o.CustomerId
+ORDER BY o.Id;
+'@
+Assert-Equal @'
+SELECT o.Id, c.Name
+FROM dbo.Orders o
+LEFT JOIN dbo.Customers c ON c.Id = o.CustomerId
+'@ $orderedJoin.CountSourceSql 'Joined count source removes only top-level ORDER BY'
+
+$unorderedJoin = Test-SqlUtilityQuery -Sql 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id;'
+Assert-Equal 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id' `
+    $unorderedJoin.CountSourceSql 'Unordered joined count source keeps the complete normalized query'
+
 $countSql = New-SqlUtilityCountSql `
     -CountSourceSql 'SELECT *, Price * 1.25 FROM dbo.Items' `
     -OutputColumnCount 4
@@ -100,7 +126,6 @@ $rejected = @(
     @{ Name = 'two final semicolons'; Sql = 'SELECT * FROM dbo.Items;;' },
     @{ Name = 'CTE'; Sql = 'WITH cte AS (SELECT * FROM dbo.Items) SELECT * FROM cte' },
     @{ Name = 'nested SELECT'; Sql = 'SELECT Id FROM dbo.Items WHERE Id IN (SELECT Id FROM dbo.Other)' },
-    @{ Name = 'JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id' },
     @{ Name = 'APPLY'; Sql = 'SELECT i.Id FROM dbo.Items i CROSS APPLY dbo.Func(i.Id) f' },
     @{ Name = 'comma table source'; Sql = 'SELECT * FROM dbo.Items, dbo.Other' },
     @{ Name = 'UNION'; Sql = 'SELECT Id FROM dbo.Items UNION SELECT Id FROM dbo.Other' },

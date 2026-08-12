@@ -358,7 +358,8 @@ function Read-SqlUtilityNamedSource {
         $index++
     }
     elseif ($index -lt $Tokens.Count -and $Tokens[$index].Depth -eq 0 -and
-        (Test-SqlUtilityAliasToken -Token $Tokens[$index])) {
+        (Test-SqlUtilityAliasToken -Token $Tokens[$index]) -and
+        (Get-SqlUtilityJoinPrefix -Tokens $Tokens -Start $index).Kind -eq 'None') {
         $index++
     }
 
@@ -416,6 +417,15 @@ function Get-SqlUtilityJoinPrefix {
             Kind = 'Unsupported'
             Length = 2
             ErrorMessage = 'CROSS JOIN is not allowed. Use INNER JOIN or LEFT JOIN with ON.'
+        }
+    }
+    foreach ($joinHint in @('LOOP', 'HASH', 'MERGE', 'REMOTE')) {
+        if ((& $wordAt $Start $joinHint) -and (& $wordAt ($Start + 1) 'JOIN')) {
+            return [pscustomobject]@{
+                Kind = 'Unsupported'
+                Length = 2
+                ErrorMessage = "$joinHint JOIN hints are not allowed. Use INNER JOIN or LEFT JOIN."
+            }
         }
     }
 

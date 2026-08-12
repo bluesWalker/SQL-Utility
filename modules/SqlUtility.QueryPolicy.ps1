@@ -335,9 +335,13 @@ function Read-SqlUtilityNamedSource {
 
     if ($index -lt $Tokens.Count -and $Tokens[$index].Depth -eq 0 -and
         $Tokens[$index].Kind -eq 'Symbol' -and $Tokens[$index].Text -eq '.') {
+        if ($Tokens[$index - 1].End -ne $Tokens[$index].Start) {
+            return & $invalid 'The table identifier is malformed.'
+        }
         $index++
         if ($index -ge $Tokens.Count -or $Tokens[$index].Depth -ne 0 -or
-            -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index])) {
+            -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index]) -or
+            $Tokens[$index - 1].End -ne $Tokens[$index].Start) {
             return & $invalid 'The table identifier is malformed.'
         }
         $identifierEnd = $Tokens[$index].End
@@ -665,6 +669,9 @@ function Test-SqlUtilityScalarExpression {
 
         if ($token.Kind -eq 'Identifier' -or $token.Kind -eq 'Word') {
             if ($token.Kind -eq 'Word') {
+                if ($token.Upper -eq 'JOIN') {
+                    return $false
+                }
                 if ($token.Upper -eq 'CASE') {
                     if (-not $expectOperand) {
                         return $false

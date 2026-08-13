@@ -305,6 +305,133 @@ function Test-SqlUtilityAliasToken {
     return -not $script:SqlUtilityReservedAliasWords.ContainsKey($Token.Upper)
 }
 
+function Read-SqlUtilityNamedSource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start
+    )
+
+    $invalid = {
+        param([string] $Message)
+        [pscustomobject][ordered]@{
+            IsValid = $false
+            ErrorMessage = $Message
+            NextIndex = $Start
+            IdentifierStart = -1
+            IdentifierEnd = -1
+        }
+    }
+
+    if ($Start -ge $Tokens.Count -or $Tokens[$Start].Depth -ne 0 -or
+        -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$Start])) {
+        return & $invalid 'A table source must begin with a one- or two-part table identifier.'
+    }
+
+    $index = $Start
+    $identifierStart = $Tokens[$index].Start
+    $identifierEnd = $Tokens[$index].End
+    $index++
+
+    if ($index -lt $Tokens.Count -and $Tokens[$index].Depth -eq 0 -and
+        $Tokens[$index].Kind -eq 'Symbol' -and $Tokens[$index].Text -eq '.') {
+        if ($Tokens[$index - 1].End -ne $Tokens[$index].Start) {
+            return & $invalid 'The table identifier is malformed.'
+        }
+        $index++
+        if ($index -ge $Tokens.Count -or $Tokens[$index].Depth -ne 0 -or
+            -not (Test-SqlUtilityIdentifierToken -Token $Tokens[$index]) -or
+            $Tokens[$index - 1].End -ne $Tokens[$index].Start) {
+            return & $invalid 'The table identifier is malformed.'
+        }
+        $identifierEnd = $Tokens[$index].End
+        $index++
+    }
+
+    if ($index -lt $Tokens.Count -and $Tokens[$index].Depth -eq 0 -and
+        $Tokens[$index].Kind -eq 'Word' -and $Tokens[$index].Upper -eq 'AS') {
+        $index++
+        if ($index -ge $Tokens.Count -or $Tokens[$index].Depth -ne 0 -or
+            -not (Test-SqlUtilityAliasToken -Token $Tokens[$index])) {
+            return & $invalid 'AS must be followed by a table alias.'
+        }
+        $index++
+    }
+    elseif ($index -lt $Tokens.Count -and $Tokens[$index].Depth -eq 0 -and
+        (Test-SqlUtilityAliasToken -Token $Tokens[$index]) -and
+        (Get-SqlUtilityJoinPrefix -Tokens $Tokens -Start $index).Kind -eq 'None') {
+        $index++
+    }
+
+    return [pscustomobject][ordered]@{
+        IsValid = $true
+        ErrorMessage = ''
+        NextIndex = $index
+        IdentifierStart = $identifierStart
+        IdentifierEnd = $identifierEnd
+    }
+}
+
+function Get-SqlUtilityJoinPrefix {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][object[]] $Tokens,
+        [Parameter(Mandatory = $true)][int] $Start
+    )
+
+    $wordAt = {
+        param([int] $Index, [string] $Word)
+        return $Index -lt $Tokens.Count -and $Tokens[$Index].Depth -eq 0 -and
+            $Tokens[$Index].Kind -eq 'Word' -and $Tokens[$Index].Upper -eq $Word
+    }
+
+    if (& $wordAt $Start 'JOIN') {
+        return [pscustomobject]@{ Kind = 'Allowed'; Length = 1; ErrorMessage = '' }
+    }
+    if ((& $wordAt $Start 'INNER') -and (& $wordAt ($Start + 1) 'JOIN')) {
+        return [pscustomobject]@{ Kind = 'Allowed'; Length = 2; ErrorMessage = '' }
+    }
+    if (& $wordAt $Start 'LEFT') {
+        if (& $wordAt ($Start + 1) 'JOIN') {
+            return [pscustomobject]@{ Kind = 'Allowed'; Length = 2; ErrorMessage = '' }
+        }
+        if ((& $wordAt ($Start + 1) 'OUTER') -and (& $wordAt ($Start + 2) 'JOIN')) {
+            return [pscustomobject]@{ Kind = 'Allowed'; Length = 3; ErrorMessage = '' }
+        }
+    }
+
+    foreach ($unsupported in @('RIGHT', 'FULL')) {
+        if (& $wordAt $Start $unsupported) {
+            $joinOffset = if (& $wordAt ($Start + 1) 'OUTER') { 2 } else { 1 }
+            if (& $wordAt ($Start + $joinOffset) 'JOIN') {
+                return [pscustomobject]@{
+                    Kind = 'Unsupported'
+                    Length = $joinOffset + 1
+                    ErrorMessage = "$unsupported JOIN is not allowed. Use INNER JOIN or LEFT JOIN."
+                }
+            }
+        }
+    }
+    if ((& $wordAt $Start 'CROSS') -and (& $wordAt ($Start + 1) 'JOIN')) {
+        return [pscustomobject]@{
+            Kind = 'Unsupported'
+            Length = 2
+            ErrorMessage = 'CROSS JOIN is not allowed. Use INNER JOIN or LEFT JOIN with ON.'
+        }
+    }
+    foreach ($joinHint in @('LOOP', 'HASH', 'MERGE', 'REMOTE')) {
+        if ((& $wordAt $Start $joinHint) -and (& $wordAt ($Start + 1) 'JOIN')) {
+            return [pscustomobject]@{
+                Kind = 'Unsupported'
+                Length = 2
+                ErrorMessage = "$joinHint JOIN hints are not allowed. Use INNER JOIN or LEFT JOIN."
+            }
+        }
+    }
+
+    return [pscustomobject]@{ Kind = 'None'; Length = 0; ErrorMessage = '' }
+}
+
 function Test-SqlUtilityCastType {
     [CmdletBinding()]
     param(
@@ -552,6 +679,9 @@ function Test-SqlUtilityScalarExpression {
 
         if ($token.Kind -eq 'Identifier' -or $token.Kind -eq 'Word') {
             if ($token.Kind -eq 'Word') {
+                if ($token.Upper -eq 'JOIN') {
+                    return $false
+                }
                 if ($token.Upper -eq 'CASE') {
                     if (-not $expectOperand) {
                         return $false
@@ -837,7 +967,7 @@ function Test-SqlUtilityQuery {
         'INSERT','UPDATE','DELETE','MERGE','DROP','ALTER','CREATE','TRUNCATE',
         'EXEC','EXECUTE','DECLARE','SET','USE','GRANT','REVOKE','DENY',
         'BEGIN','COMMIT','ROLLBACK','BACKUP','RESTORE','DBCC','BULK',
-        'JOIN','APPLY','UNION','INTERSECT','EXCEPT','INTO','TOP','OFFSET','FETCH',
+        'APPLY','UNION','INTERSECT','EXCEPT','INTO','TOP','OFFSET','FETCH',
         'OPENQUERY','OPENROWSET','OPENDATASOURCE'
     )
 
@@ -897,61 +1027,68 @@ function Test-SqlUtilityQuery {
     }
 
     $sourceIndex = $fromIndexes[0] + 1
-    if ($sourceIndex -ge $tokens.Count -or $tokens[$sourceIndex].Depth -ne 0 -or -not (Test-SqlUtilityIdentifierToken -Token $tokens[$sourceIndex])) {
-        return New-SqlUtilityInvalidQueryResult -Message 'FROM must be followed by a table identifier.'
+    $primarySource = Read-SqlUtilityNamedSource -Tokens $tokens -Start $sourceIndex
+    if (-not $primarySource.IsValid) {
+        return New-SqlUtilityInvalidQueryResult -Message $primarySource.ErrorMessage
     }
 
-    $tableStart = $tokens[$sourceIndex].Start
-    $tableEnd = $tokens[$sourceIndex].End
-    $sourceIndex++
-
-    if ($sourceIndex -lt $tokens.Count -and $tokens[$sourceIndex].Depth -eq 0 -and $tokens[$sourceIndex].Kind -eq 'Symbol' -and $tokens[$sourceIndex].Text -eq '.') {
-        $sourceIndex++
-        if ($sourceIndex -ge $tokens.Count -or $tokens[$sourceIndex].Depth -ne 0 -or -not (Test-SqlUtilityIdentifierToken -Token $tokens[$sourceIndex])) {
-            return New-SqlUtilityInvalidQueryResult -Message 'The table identifier is malformed.'
-        }
-        $tableEnd = $tokens[$sourceIndex].End
-        $sourceIndex++
-    }
-
+    $tableStart = $primarySource.IdentifierStart
+    $tableEnd = $primarySource.IdentifierEnd
+    $sourceIndex = $primarySource.NextIndex
     $clauseWords = @('WHERE', 'GROUP', 'HAVING', 'ORDER')
+
+    while ($sourceIndex -lt $tokens.Count) {
+        $joinPrefix = Get-SqlUtilityJoinPrefix -Tokens $tokens -Start $sourceIndex
+        if ($joinPrefix.Kind -eq 'Unsupported') {
+            return New-SqlUtilityInvalidQueryResult -Message $joinPrefix.ErrorMessage
+        }
+        if ($joinPrefix.Kind -ne 'Allowed') {
+            break
+        }
+
+        $joinedSourceStart = $sourceIndex + $joinPrefix.Length
+        $joinedSource = Read-SqlUtilityNamedSource -Tokens $tokens -Start $joinedSourceStart
+        if (-not $joinedSource.IsValid) {
+            return New-SqlUtilityInvalidQueryResult -Message $joinedSource.ErrorMessage
+        }
+
+        $onIndex = $joinedSource.NextIndex
+        if ($onIndex -ge $tokens.Count -or $tokens[$onIndex].Depth -ne 0 -or
+            $tokens[$onIndex].Kind -ne 'Word' -or $tokens[$onIndex].Upper -ne 'ON') {
+            return New-SqlUtilityInvalidQueryResult -Message 'Each JOIN must be followed by an ON predicate.'
+        }
+
+        $predicateStart = $onIndex + 1
+        $predicateEnd = $predicateStart
+        while ($predicateEnd -lt $tokens.Count) {
+            $boundaryToken = $tokens[$predicateEnd]
+            if ($boundaryToken.Depth -eq 0) {
+                $nextJoin = Get-SqlUtilityJoinPrefix -Tokens $tokens -Start $predicateEnd
+                if ($nextJoin.Kind -ne 'None') {
+                    break
+                }
+                if ($boundaryToken.Kind -eq 'Word' -and $clauseWords -contains $boundaryToken.Upper) {
+                    break
+                }
+            }
+            $predicateEnd++
+        }
+
+        if ($predicateStart -ge $predicateEnd -or
+            -not (Test-SqlUtilityExpressionList -Tokens $tokens -Start $predicateStart -End $predicateEnd)) {
+            return New-SqlUtilityInvalidQueryResult -Message 'The JOIN ON clause contains an invalid or empty predicate.'
+        }
+
+        $sourceIndex = $predicateEnd
+    }
+
     $atClauseBoundary = $sourceIndex -ge $tokens.Count -or (
         $tokens[$sourceIndex].Depth -eq 0 -and
         $tokens[$sourceIndex].Kind -eq 'Word' -and
         $clauseWords -contains $tokens[$sourceIndex].Upper
     )
-
     if (-not $atClauseBoundary) {
-        if ($tokens[$sourceIndex].Depth -ne 0 -or -not (Test-SqlUtilityIdentifierToken -Token $tokens[$sourceIndex])) {
-            return New-SqlUtilityInvalidQueryResult -Message 'The table source must be a single table with an optional alias.'
-        }
-
-        if ($tokens[$sourceIndex].Kind -eq 'Word' -and $tokens[$sourceIndex].Upper -eq 'AS') {
-            $sourceIndex++
-            if (
-                $sourceIndex -ge $tokens.Count -or
-                $tokens[$sourceIndex].Depth -ne 0 -or
-                -not (Test-SqlUtilityAliasToken -Token $tokens[$sourceIndex])
-            ) {
-                return New-SqlUtilityInvalidQueryResult -Message 'AS must be followed by a table alias.'
-            }
-            $sourceIndex++
-        }
-        else {
-            if (-not (Test-SqlUtilityAliasToken -Token $tokens[$sourceIndex])) {
-                return New-SqlUtilityInvalidQueryResult -Message 'The table alias is malformed.'
-            }
-            $sourceIndex++
-        }
-
-        $atClauseBoundary = $sourceIndex -ge $tokens.Count -or (
-            $tokens[$sourceIndex].Depth -eq 0 -and
-            $tokens[$sourceIndex].Kind -eq 'Word' -and
-            $clauseWords -contains $tokens[$sourceIndex].Upper
-        )
-        if (-not $atClauseBoundary) {
-            return New-SqlUtilityInvalidQueryResult -Message 'Only one table and one optional alias are allowed after FROM.'
-        }
+        return New-SqlUtilityInvalidQueryResult -Message 'Unexpected tokens follow the table source or JOIN chain.'
     }
 
     $clauses = New-Object System.Collections.Generic.List[object]

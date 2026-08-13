@@ -38,7 +38,7 @@ Keep each file focused on its established ownership:
 - `StartSqlUtility.cmd`: resolve and start the sibling PowerShell application; no business logic.
 - `SqlUtility.ps1`: WinForms construction, application state, workflow orchestration, service boundaries, result binding, paging controls, status, and user messages.
 - `modules/SqlUtility.Config.ps1`: configuration defaults/schema validation, saved-pair operations, JSON reads, and safe app-local writes.
-- `modules/SqlUtility.QueryPolicy.ps1`: SQL tokenization, single-table read-only grammar, normalization, table extraction, and top-level ordering detection.
+- `modules/SqlUtility.QueryPolicy.ps1`: SQL tokenization, named-source read-only grammar, approved `INNER JOIN`/`LEFT JOIN` chain validation, normalization, primary-table extraction, and top-level ordering detection.
 - `modules/SqlUtility.Database.ps1`: connection strings, SQL connections/commands/readers, diagnostic tests, paging, neutral result conversion, ordered streaming, timeouts, cancellation where possible, and deterministic disposal.
 - `modules/SqlUtility.Excel.ps1`: neutral schema/row input to `.xlsx`, workbook limits, OOXML data fidelity, timeout checks, and safe destination replacement.
 
@@ -60,10 +60,10 @@ Preserve deterministic cleanup of SQL connections, commands, readers, streams, Z
 - Paging and export use the exact last successful normalized query snapshot. Editor changes make results stale.
 - Export is allowed only when the complete result is available: ordered results stream a fresh complete execution; complete unordered results use the full cache; incomplete/truncated unordered results must be rejected before prompting.
 - Excel export must preserve the existing destination until a complete workbook is ready. Preserve row/text limits, formula-literal safety, binary hex fidelity, OOXML escaping, early-date handling, and timeout cleanup.
-- The query policy remains one statement, one named table, and read-only `SELECT`. It excludes joins, subqueries, CTEs, set operators, batches, stored/dynamic SQL, external table sources, and data-changing, DDL, transaction, permission, or administrative commands.
+- The query policy remains one statement and read-only `SELECT`. It permits one primary one- or two-part named source plus zero or more chained bare/`INNER JOIN`, `LEFT JOIN`, or `LEFT OUTER JOIN` units, each with one named source and a required valid `ON` predicate. It continues to exclude all other join/apply/source forms, subqueries, CTEs, set operators, batches, stored/dynamic SQL, external sources, and data-changing, DDL, transaction, permission, or administrative commands.
 - Treat query validation as an accidental-change safety boundary, not a replacement for least-privileged SQL Server permissions.
 
-Widening query grammar—especially adding `INNER JOIN` or `LEFT JOIN`—requires explicit user approval, a grammar design, bypass-focused regression tests, and preservation of all existing rejected cases.
+Any further query-grammar widening requires explicit user approval, an updated grammar design, bypass-focused regression tests, and preservation of every unaffected rejected case.
 
 ## Change Guidelines
 

@@ -13,7 +13,7 @@ Version 1 is intentionally small and synchronous. It is designed to be copied in
 - App-local persistence of successful server/database pairs and global settings.
 - Saved-connection selection and confirmed deletion.
 - Query and Settings tabs available after connection.
-- One read-only `SELECT` statement against one named table.
+- One read-only `SELECT` statement over a primary named table with optional chained named-table `INNER JOIN` and `LEFT JOIN` clauses.
 - Server-side paging for queries with a top-level `ORDER BY`.
 - Bounded retrieval and local display paging for unordered queries.
 - Fixed 500-row display pages.
@@ -102,7 +102,7 @@ flowchart LR
 | --- | --- |
 | `SqlUtility.ps1` | Creates WinForms controls, owns the one-line action layout, coordinates connection/query/count/settings/export workflows, owns application and explicit-count state, binds result pages, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
 | `modules/SqlUtility.Config.ps1` | Creates defaults, validates schema and settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
-| `modules/SqlUtility.QueryPolicy.ps1` | Tokenizes SQL, enforces the v1 single-table read-only grammar, normalizes executable SQL, extracts the table identifier, detects top-level `ORDER BY`, and generates count-source/wrapper SQL. |
+| `modules/SqlUtility.QueryPolicy.ps1` | Validates named sources, approved join chains, normalization, primary-table extraction, and top-level ordering; generates count-source/wrapper SQL. |
 | `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, executes bounded queries and scalar counts, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |
 | `modules/SqlUtility.Excel.ps1` | Converts neutral schema/row input into a safe Open Packaging Convention `.xlsx`, enforces worksheet/text/timeout limits, and replaces the destination only after package completion. It never owns SQL connections. |
 
@@ -161,6 +161,10 @@ Version 1 accepts one statement with this logical shape:
 ```sql
 SELECT [DISTINCT] expressions
 FROM [schema.]table [alias]
+{
+    [INNER] JOIN [schema.]table [alias] ON predicate
+  | LEFT [OUTER] JOIN [schema.]table [alias] ON predicate
+} [...]
 [WHERE predicate]
 [GROUP BY expressions]
 [HAVING predicate]
@@ -188,22 +192,37 @@ FROM dbo.Items
 ORDER BY Id;
 ```
 
-Normal scalar and aggregate expressions, `CASE`, explicit or implicit aliases, string literals, quoted/bracketed identifiers, balanced nested comments, and dedicated `CAST`/`TRY_CAST` type syntax are supported when they remain inside the approved single-table shape.
+```sql
+SELECT i.Id, c.Name
+FROM dbo.Items AS i
+INNER JOIN dbo.Categories AS c ON c.Id = i.CategoryId;
+```
+
+```sql
+SELECT o.Id, c.Name, r.RegionName
+FROM dbo.Orders AS o
+LEFT OUTER JOIN dbo.Customers AS c ON c.Id = o.CustomerId AND c.Enabled = 1
+INNER JOIN dbo.Regions AS r ON r.Id = c.RegionId
+WHERE o.CreatedAt >= '2026-01-01'
+ORDER BY o.Id;
+```
+
+Bare `JOIN` means `INNER JOIN`. Every join requires a nonempty `ON` predicate, which accepts the existing expression/predicate grammar. Normal scalar and aggregate expressions, `CASE`, explicit or implicit aliases, string literals, quoted/bracketed identifiers, balanced nested comments, and dedicated `CAST`/`TRY_CAST` type syntax are supported when they remain inside the approved named-source shape. `TableIdentifier` remains an internal validation result for the primary source; it is not a user-facing multi-source catalog.
 
 The validator rejects:
 
-- `JOIN`, `APPLY`, and comma-separated table sources.
-- Subqueries, nested `SELECT`, and common table expressions.
-- `UNION`, `INTERSECT`, and `EXCEPT`.
+- `RIGHT JOIN`, `RIGHT OUTER JOIN`, `FULL JOIN`, `FULL OUTER JOIN`, `CROSS JOIN`, `CROSS APPLY`, `OUTER APPLY`, and comma-separated table sources.
+- Derived tables, parenthesized table sources, subqueries, nested `SELECT`, common table expressions, table-valued functions, and external or remote rowset functions.
+- Temporary tables, table variables, table hints, query hints, three-part or four-part table names, and other cross-database or linked-server sources.
+- `UNION`, `INTERSECT`, `EXCEPT`, `TOP`, user-supplied `OFFSET`/`FETCH`, and `INTO`.
 - Multiple statements or executable content after the one allowed query.
-- `TOP`, user-supplied `OFFSET`/`FETCH`, and `INTO`.
-- Temporary tables, table variables, stored procedures, and dynamic SQL.
-- External or remote table-source functions such as `OPENROWSET`.
-- Data modification, DDL, transaction, permission, and administrative commands.
+- Stored procedures, dynamic SQL, data modification, DDL, transaction, permission, and administrative commands.
 
 The tokenizer distinguishes executable tokens from strings, quoted identifiers, bracketed identifiers, line comments, nested block comments, and parenthesis depth. Reserved words and statement starters cannot be consumed as unquoted aliases.
 
 This client-side validator is an accidental-change safeguard, not a security sandbox. SQL Server permissions assigned to the signed-in Windows identity remain the authoritative boundary; use a least-privileged database identity.
+
+Result limits bound transferred and retained rows, not SQL Server join work or intermediate results. A joined query can still scan large sources, produce large intermediate results, sort, group, block, or time out before rows reach the client.
 
 ## Query Execution and Paging
 
@@ -300,7 +319,7 @@ Tests are dependency-free PowerShell scripts and do not require a live SQL Serve
 | --- | --- |
 | `tests/Test-Helpers.ps1` | Shared assertions and test completion behavior. |
 | `tests/Test-Config.ps1` | Defaults, schema/ranges, saved pairs, corruption classification, and safe persistence. |
-| `tests/Test-QueryPolicy.ps1` | Accepted grammar, forbidden constructs, statement boundaries, aliases, comments, and cast syntax. |
+| `tests/Test-QueryPolicy.ps1` | Accepted grammar including JOIN chains, bypass-focused named-source/join rejection, statement boundaries, aliases, comments, and cast syntax. |
 | `tests/Test-Database.ps1` | Integrated connection strings, paging, neutral result conversion, limits, timeouts, and disposal boundaries. |
 | `tests/Test-Excel.ps1` | ZIP/XML workbook structure, formatting, data fidelity, limits, overwrite safety, timeout, and cleanup. |
 | `tests/Test-SqlUtilityUi.ps1` | WinForms stages, state transitions, injected workflow services, paging, export eligibility, settings, and failure paths. |
@@ -323,19 +342,22 @@ powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Tes
 ## Citrix Acceptance Checklist
 
 These are external acceptance checks. Local automated tests do not complete them.
+JOIN execution against real Citrix/SQL Server remains pending until these checks are performed in that environment.
 
 - [ ] Copy/extract the six runtime files and launch `StartSqlUtility.cmd` in Citrix.
 - [ ] Test and persist a real Windows integrated server/database connection.
 - [ ] Restart and verify saved connections and global settings reload from the app directory.
-- [ ] Run representative complete unordered, truncated unordered, and ordered queries.
-- [ ] Verify paging with a stable unique `ORDER BY`.
-- [ ] Export representative results and open the workbook in desktop Excel.
+- [ ] Run representative complete unordered, truncated unordered, and ordered `INNER JOIN`, `LEFT JOIN`, and mixed chained-join queries.
+- [ ] Verify ordered joined-result paging with a stable unique `ORDER BY`, including a page beyond the first 500 rows and back.
+- [ ] Run an explicit Count for an ordered joined result.
+- [ ] Verify an unordered joined result at the row limit is truncated and cannot export; export a complete joined result and open the workbook in desktop Excel.
+- [ ] Verify an unsupported `RIGHT JOIN` is rejected before a database call, and a valid-shape query with an unknown or ambiguous column reports a server-side Query Error.
 - [ ] Confirm the header is bold, filtered, and frozen and representative cell types are correct.
 - [ ] Confirm the application creates no files except app-local configuration/transients and explicitly selected Excel output/transients.
 
 ## Version 1 Limitations
 
-- One named table per query; no joins, subqueries, CTEs, or SQL batches.
+- One primary one- or two-part named source with optional chained bare/`INNER JOIN`, `LEFT JOIN`, or `LEFT OUTER JOIN` units; no other join/apply forms, derived sources, subqueries, CTEs, set operators, or SQL batches.
 - One result set, one query tab, and one active server/database pair.
 - Synchronous UI with no background runspace, cancellation button, or detailed progress.
 - No query history, saved queries, result persistence, or operational log.
@@ -345,7 +367,7 @@ These are external acceptance checks. Local automated tests do not complete them
 
 ## Future Extensions
 
-The isolated query-policy module allows later versions to add explicit named-table `INNER JOIN` and `LEFT JOIN` grammar without collapsing the UI, database, paging, configuration, or export boundaries. Additional functional tabs and background execution may also be considered later, but they are not version 1 commitments.
+Future query-policy work remains limited to separately designed extensions such as `RIGHT`/`FULL`/`CROSS JOIN`, `APPLY`, derived sources, subqueries, CTEs, set operators, table functions, cross-database sources, and guarded `UPDATE`. Background execution and additional functional tabs may also be considered later, but they are not current commitments.
 
 Any scope expansion should preserve least-privilege SQL permissions, explicit grammar validation, complete-result export rules, portable runtime constraints, and regression coverage.
 

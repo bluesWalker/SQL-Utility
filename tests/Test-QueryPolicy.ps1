@@ -33,6 +33,18 @@ $accepted = @(
     @{ Name = 'CAST length type and implicit alias'; Sql = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Name AS nvarchar(50)) ConvertedName FROM dbo.Items' }
     @{ Name = 'CAST precision and scale type'; Sql = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT CAST(Amount AS decimal(18, 2)) AS ConvertedAmount FROM dbo.Items' }
     @{ Name = 'TRY_CAST maximum length type'; Sql = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT TRY_CAST(Payload AS varbinary(max)) AS ConvertedPayload FROM dbo.Items' }
+    @{ Name = 'bare inner join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'explicit inner join'; Sql = 'SELECT i.Id FROM dbo.Items AS i INNER JOIN dbo.Other AS o ON o.Id = i.Id'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id FROM dbo.Items AS i INNER JOIN dbo.Other AS o ON o.Id = i.Id' }
+    @{ Name = 'left join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'left outer join'; Sql = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT OUTER JOIN dbo.Categories c ON c.Id = i.CategoryId'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id, c.Name FROM dbo.Items i LEFT OUTER JOIN dbo.Categories c ON c.Id = i.CategoryId' }
+    @{ Name = 'mixed chained joins'; Sql = "SELECT o.Id, c.Name, r.RegionName FROM dbo.Orders o LEFT OUTER JOIN dbo.Customers c ON c.Id = o.CustomerId AND c.Enabled = 1 INNER JOIN dbo.Regions r ON r.Id = c.RegionId WHERE o.CreatedAt >= '2026-01-01' ORDER BY o.Id"; Table = 'dbo.Orders'; Ordered = $true; Normalized = "SELECT o.Id, c.Name, r.RegionName FROM dbo.Orders o LEFT OUTER JOIN dbo.Customers c ON c.Id = o.CustomerId AND c.Enabled = 1 INNER JOIN dbo.Regions r ON r.Id = c.RegionId WHERE o.CreatedAt >= '2026-01-01' ORDER BY o.Id" }
+    @{ Name = 'quoted joined sources and aliases'; Sql = 'SELECT "i"."Id" FROM [dbo].[Items] AS [i] INNER JOIN "dbo"."Other" AS "o" ON "o"."Id" = [i].[Id]'; Table = '[dbo].[Items]'; Ordered = $false; Normalized = 'SELECT "i"."Id" FROM [dbo].[Items] AS [i] INNER JOIN "dbo"."Other" AS "o" ON "o"."Id" = [i].[Id]' }
+    @{ Name = 'compound range and function join'; Sql = "SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON (o.Minimum <= i.Score AND i.Score < o.Maximum) OR LEFT(o.Code, 2) = LEFT(i.Code, 2)"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON (o.Minimum <= i.Score AND i.Score < o.Maximum) OR LEFT(o.Code, 2) = LEFT(i.Code, 2)" }
+    @{ Name = 'grouped joined query'; Sql = 'SELECT c.Id, COUNT(*) AS ItemCount FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId GROUP BY c.Id HAVING COUNT(*) > 1 ORDER BY c.Id;'; Table = 'dbo.Items'; Ordered = $true; Normalized = 'SELECT c.Id, COUNT(*) AS ItemCount FROM dbo.Items i LEFT JOIN dbo.Categories c ON c.Id = i.CategoryId GROUP BY c.Id HAVING COUNT(*) > 1 ORDER BY c.Id' }
+    @{ Name = 'joined final semicolon before line comment'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id; -- trailing JOIN comment'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id -- trailing JOIN comment' }
+    @{ Name = 'joined final semicolon before block comment'; Sql = "SELECT i.Id FROM dbo.Items i LEFT JOIN dbo.Other o ON o.Id = i.Id ;`r`n/* trailing RIGHT JOIN comment ; */  "; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT i.Id FROM dbo.Items i LEFT JOIN dbo.Other o ON o.Id = i.Id `r`n/* trailing RIGHT JOIN comment ; */  " }
+    @{ Name = 'join keywords in joined query text'; Sql = "SELECT 'RIGHT JOIN FULL JOIN CROSS JOIN' AS Label FROM dbo.Items i JOIN dbo.Other o ON o.Note = 'LEFT JOIN' /* OUTER APPLY */"; Table = 'dbo.Items'; Ordered = $false; Normalized = "SELECT 'RIGHT JOIN FULL JOIN CROSS JOIN' AS Label FROM dbo.Items i JOIN dbo.Other o ON o.Note = 'LEFT JOIN' /* OUTER APPLY */" }
+    @{ Name = 'delimited join keywords as identifiers'; Sql = 'SELECT [JOIN].[LEFT] FROM dbo.Items [JOIN] INNER JOIN dbo.Other [RIGHT] ON [RIGHT].[Id] = [JOIN].[Id]'; Table = 'dbo.Items'; Ordered = $false; Normalized = 'SELECT [JOIN].[LEFT] FROM dbo.Items [JOIN] INNER JOIN dbo.Other [RIGHT] ON [RIGHT].[Id] = [JOIN].[Id]' }
 )
 
 foreach ($case in $accepted) {
@@ -73,6 +85,22 @@ $orderInExpression = Test-SqlUtilityQuery -Sql 'SELECT ROW_NUMBER() OVER (ORDER 
 Assert-Equal 'SELECT ROW_NUMBER() OVER (ORDER BY Id) AS RowNumber FROM dbo.Items' $orderInExpression.CountSourceSql `
     'ORDER BY inside an expression is not the truncation point'
 
+$orderedJoin = Test-SqlUtilityQuery -Sql @'
+SELECT o.Id, c.Name
+FROM dbo.Orders o
+LEFT JOIN dbo.Customers c ON c.Id = o.CustomerId
+ORDER BY o.Id;
+'@
+Assert-Equal @'
+SELECT o.Id, c.Name
+FROM dbo.Orders o
+LEFT JOIN dbo.Customers c ON c.Id = o.CustomerId
+'@ $orderedJoin.CountSourceSql 'Joined count source removes only top-level ORDER BY'
+
+$unorderedJoin = Test-SqlUtilityQuery -Sql 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id;'
+Assert-Equal 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id' `
+    $unorderedJoin.CountSourceSql 'Unordered joined count source keeps the complete normalized query'
+
 $countSql = New-SqlUtilityCountSql `
     -CountSourceSql 'SELECT *, Price * 1.25 FROM dbo.Items' `
     -OutputColumnCount 4
@@ -100,7 +128,6 @@ $rejected = @(
     @{ Name = 'two final semicolons'; Sql = 'SELECT * FROM dbo.Items;;' },
     @{ Name = 'CTE'; Sql = 'WITH cte AS (SELECT * FROM dbo.Items) SELECT * FROM cte' },
     @{ Name = 'nested SELECT'; Sql = 'SELECT Id FROM dbo.Items WHERE Id IN (SELECT Id FROM dbo.Other)' },
-    @{ Name = 'JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id' },
     @{ Name = 'APPLY'; Sql = 'SELECT i.Id FROM dbo.Items i CROSS APPLY dbo.Func(i.Id) f' },
     @{ Name = 'comma table source'; Sql = 'SELECT * FROM dbo.Items, dbo.Other' },
     @{ Name = 'UNION'; Sql = 'SELECT Id FROM dbo.Items UNION SELECT Id FROM dbo.Other' },
@@ -213,6 +240,52 @@ $rejected += @(
     @{ Name = 'nested group content is validated'; Sql = 'SELECT * FROM dbo.Items WHERE (Id = 1 FROBNICATE target)' },
     @{ Name = 'duplicate equals operators'; Sql = 'SELECT * FROM dbo.Items WHERE Id = = 1' },
     @{ Name = 'spaced symbols do not form compound operator'; Sql = 'SELECT * FROM dbo.Items WHERE Id > = 1' }
+)
+
+$rejected += @(
+    @{ Name = 'RIGHT JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i RIGHT JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'RIGHT OUTER JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i RIGHT OUTER JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'FULL JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i FULL JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'FULL OUTER JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i FULL OUTER JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'CROSS JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i CROSS JOIN dbo.Other o' },
+    @{ Name = 'LOOP JOIN hint after initial source'; Sql = 'SELECT Items.Id FROM dbo.Items LOOP JOIN dbo.Other o ON o.Id = Items.Id' },
+    @{ Name = 'HASH JOIN hint after initial source'; Sql = 'SELECT Items.Id FROM dbo.Items HASH JOIN dbo.Other o ON o.Id = Items.Id' },
+    @{ Name = 'MERGE JOIN hint after initial source'; Sql = 'SELECT Items.Id FROM dbo.Items MERGE JOIN dbo.Other o ON o.Id = Items.Id' },
+    @{ Name = 'REMOTE JOIN hint after initial source'; Sql = 'SELECT Items.Id FROM dbo.Items REMOTE JOIN dbo.Other o ON o.Id = Items.Id' },
+    @{ Name = 'LOOP JOIN hint at chained boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id LOOP JOIN dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'HASH JOIN hint at chained boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id HASH JOIN dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'MERGE JOIN hint at chained boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id MERGE JOIN dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'REMOTE JOIN hint at chained boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id REMOTE JOIN dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'CROSS APPLY'; Sql = 'SELECT i.Id FROM dbo.Items i CROSS APPLY dbo.Func(i.Id) f' },
+    @{ Name = 'OUTER APPLY'; Sql = 'SELECT i.Id FROM dbo.Items i OUTER APPLY dbo.Func(i.Id) f' },
+    @{ Name = 'comma after join'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id, dbo.Third t' },
+    @{ Name = 'JOIN missing source'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN ON i.Id = 1' },
+    @{ Name = 'JOIN missing ON'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o WHERE i.Id = 1' },
+    @{ Name = 'JOIN empty ON at end'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON' },
+    @{ Name = 'JOIN empty ON before WHERE'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON WHERE i.Id = 1' },
+    @{ Name = 'JOIN empty ON before chained join'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON LEFT JOIN dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'joined AS missing alias'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other AS ON i.Id = 1' },
+    @{ Name = 'joined malformed two-part name'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo. o ON o.Id = i.Id' },
+    @{ Name = 'joined extra source token'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o extra ON o.Id = i.Id' },
+    @{ Name = 'INNER missing JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i INNER dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'LEFT OUTER missing JOIN'; Sql = 'SELECT i.Id FROM dbo.Items i LEFT OUTER dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'malformed chained INNER boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id INNER dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'malformed chained LEFT OUTER boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id LEFT OUTER dbo.Third t ON t.Id = i.Id' },
+    @{ Name = 'joined derived source'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN (dbo.Other) o ON o.Id = i.Id' },
+    @{ Name = 'joined subquery source'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN (SELECT Id FROM dbo.Other) o ON o.Id = i.Id' },
+    @{ Name = 'subquery inside ON'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id IN (SELECT Id FROM dbo.Third)' },
+    @{ Name = 'joined table function'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.GetOther() o ON o.Id = i.Id' },
+    @{ Name = 'joined table hint'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o WITH (NOLOCK) ON o.Id = i.Id' },
+    @{ Name = 'joined temporary table'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN #Other o ON o.Id = i.Id' },
+    @{ Name = 'joined table variable'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN @Other o ON o.Id = i.Id' },
+    @{ Name = 'joined three-part source'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN UtilityDb.dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'joined four-part source'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN ServerA.UtilityDb.dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'second statement after join'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id; DELETE FROM dbo.Items' },
+    @{ Name = 'semicolonless batch after join'; Sql = "SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON o.Id = i.Id`r`nWAITFOR DELAY '00:00:01'" },
+    @{ Name = 'JOIN token in SELECT list'; Sql = 'SELECT JOIN FROM dbo.Items' },
+    @{ Name = 'JOIN token after WHERE'; Sql = 'SELECT i.Id FROM dbo.Items i WHERE i.Id = 1 JOIN dbo.Other o ON o.Id = i.Id' },
+    @{ Name = 'unclosed ON parenthesis'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN dbo.Other o ON (o.Id = i.Id' },
+    @{ Name = 'unclosed comment at join boundary'; Sql = 'SELECT i.Id FROM dbo.Items i JOIN /* open dbo.Other o ON o.Id = i.Id' }
 )
 
 $rejected += @(

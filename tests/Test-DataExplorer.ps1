@@ -87,4 +87,42 @@ $nullQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -Se
 Assert-Equal 1 $nullQuery.PreviewParameters.Count 'Null predicate ignores supplied value text'
 Assert-True ($nullQuery.EditorSql -match '\[ProductID\] IS NULL') 'Null predicate renders without a literal'
 
+$preciseColumns = @(
+    [pscustomobject]@{ Name='Precise'; Ordinal=1; SqlTypeName='datetime2'; MaxLength=8; Precision=0; Scale=7; IsNullable=$false; IsUserDefined=$false },
+    [pscustomobject]@{ Name='WholeSecond'; Ordinal=2; SqlTypeName='datetime2'; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+)
+$preciseQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns $preciseColumns -SelectedColumnNames @('Precise','WholeSecond') -Filters @(
+    [pscustomobject]@{ ColumnName='Precise'; Operator='Equals'; ValueText='2026-01-02T03:04:05.1234567' },
+    [pscustomobject]@{ ColumnName='WholeSecond'; Operator='Equals'; ValueText='2026-01-02T03:04:05.7654321' }
+) -PreviewRowLimit 100
+Assert-True ($preciseQuery.EditorSql -match "\[Precise\] = '2026-01-02T03:04:05\.1234567'") 'Datetime2 scale 7 editor literal preserves all fractional digits'
+Assert-True ($preciseQuery.EditorSql -match "\[WholeSecond\] = '2026-01-02T03:04:05'") 'Datetime2 scale 0 editor literal omits fractional digits'
+Assert-Equal 7 $preciseQuery.PreviewParameters[1].Scale 'Datetime2 scale 7 parameter facet is preserved'
+Assert-Equal 0 $preciseQuery.PreviewParameters[2].Scale 'Datetime2 scale 0 parameter facet is preserved'
+
+foreach ($invalidLimit in @('100', 10.5)) {
+    Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -SelectedColumnNames @('PlantID') -Filters @() -PreviewRowLimit $invalidLimit } 'System.ArgumentException' "Non-integral CLR preview limit $invalidLimit is rejected"
+}
+
+$startsWithQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -SelectedColumnNames @('ProductID') -Filters @(
+    [pscustomobject]@{ ColumnName='ProductID'; Operator='StartsWith'; ValueText="A]_%['; --" },
+    [pscustomobject]@{ ColumnName='ProductID'; Operator='NotEquals'; ValueText='finished' }
+) -PreviewRowLimit 100
+Assert-Equal "A][_][%][[]'; --%" $startsWithQuery.PreviewParameters[1].Value 'StartsWith escapes LIKE metacharacters while retaining a literal bracket and quote'
+Assert-True ($startsWithQuery.PreviewSql -notmatch "finished|A\]_") 'Preview SQL keeps repeated filter values parameterized'
+Assert-True ($startsWithQuery.EditorSql -match "LIKE 'A\]\[_\]\[%\]\[\[]''; --%' AND \[ProductID\] <> 'finished'") 'Editor SQL safely renders repeated string filters with quote and comment-like content'
+Assert-Equal 3 $startsWithQuery.PreviewParameters.Count 'Repeated value filters receive separate deterministic parameters'
+
+foreach ($invalid in @(
+    @{ Name='invalid date'; Column='OrderDate'; Operator='Equals'; Value='not-a-date' },
+    @{ Name='invalid time'; Column='TimeValue'; Operator='Equals'; Value='25:99:99'; Type='time' },
+    @{ Name='invalid bit'; Column='BitValue'; Operator='Equals'; Value='maybe'; Type='bit' },
+    @{ Name='invalid guid'; Column='GuidValue'; Operator='Equals'; Value='not-a-guid'; Type='uniqueidentifier' },
+    @{ Name='non-finite float'; Column='FloatValue'; Operator='Equals'; Value='NaN'; Type='float' },
+    @{ Name='integer overflow'; Column='IntValue'; Operator='Equals'; Value='2147483648'; Type='int' }
+)) {
+    if ($invalid.ContainsKey('Type')) { $invalidColumns = @([pscustomobject]@{ Name=$invalid.Column; Ordinal=1; SqlTypeName=$invalid.Type; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }) } else { $invalidColumns = $columns }
+    Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns $invalidColumns -SelectedColumnNames @($invalid.Column) -Filters @([pscustomobject]@{ ColumnName=$invalid.Column; Operator=$invalid.Operator; ValueText=$invalid.Value }) -PreviewRowLimit 100 } 'System.ArgumentException' "$($invalid.Name) is rejected"
+}
+
 Complete-TestFile 'All Data Explorer tests passed.'

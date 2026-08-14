@@ -124,12 +124,19 @@ function Get-SqlUtilityDataExplorerDbType([string] $Type) {
     }
 }
 
-function ConvertTo-SqlUtilityDataExplorerLiteral([object] $Value, [string] $Type) {
+function ConvertTo-SqlUtilityDataExplorerLiteral([object] $Value, [object] $Column) {
     $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+    $type = Get-SqlUtilityDataExplorerColumnType $Column
     if ($Type -in @('char', 'varchar', 'nchar', 'nvarchar')) { $prefix = if ($Type -in @('nchar', 'nvarchar')) { 'N' } else { '' }; return $prefix + "'" + ([string] $Value).Replace("'", "''") + "'" }
     if ($Type -in @('tinyint','smallint','int','bigint','decimal','numeric','smallmoney','money','real','float')) { return [System.Convert]::ToString($Value, $invariant) }
     if ($Type -eq 'date') { return "'$($Value.ToString('yyyy-MM-dd', $invariant))'" }
-    if ($Type -in @('smalldatetime','datetime','datetime2')) { return "'$($Value.ToString('yyyy-MM-ddTHH:mm:ss.fff', $invariant))'" }
+    if ($type -eq 'datetime2') {
+        $scale = [int] $Column.Scale
+        $format = "yyyy-MM-dd'T'HH:mm:ss"
+        if ($scale -gt 0) { $format += '.' + ('f' * $scale) }
+        return "'$($Value.ToString($format, $invariant))'"
+    }
+    if ($type -in @('smalldatetime','datetime')) { return "'$($Value.ToString("yyyy-MM-dd'T'HH:mm:ss.fff", $invariant))'" }
     if ($Type -eq 'time') { return "'$($Value.ToString('hh\:mm\:ss\.fffffff', $invariant))'" }
     if ($Type -eq 'datetimeoffset') { return "'$($Value.ToString('yyyy-MM-ddTHH:mm:ss.fffffffzzz', $invariant))'" }
     if ($Type -eq 'bit') { if ($Value) { return '1' }; return '0' }
@@ -141,15 +148,18 @@ function New-SqlUtilityDataExplorerQuery {
     param(
         [Parameter(Mandatory = $true)][object] $Table, [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Columns,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]] $SelectedColumnNames, [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $Filters,
-        [Parameter(Mandatory = $true)][int] $PreviewRowLimit
+        [Parameter(Mandatory = $true)][object] $PreviewRowLimit
     )
     if ($null -eq $Table -or [string]::IsNullOrWhiteSpace([string] $Table.SchemaName) -or [string]::IsNullOrWhiteSpace([string] $Table.TableName)) { throw [System.ArgumentException]::new('Valid table metadata is required.') }
-    if ($PreviewRowLimit -lt 10 -or $PreviewRowLimit -gt 500) { throw [System.ArgumentException]::new('Preview row limit must be from 10 through 500.') }
+    if ($PreviewRowLimit -isnot [sbyte] -and $PreviewRowLimit -isnot [byte] -and $PreviewRowLimit -isnot [int16] -and $PreviewRowLimit -isnot [uint16] -and $PreviewRowLimit -isnot [int] -and $PreviewRowLimit -isnot [uint32] -and $PreviewRowLimit -isnot [int64] -and $PreviewRowLimit -isnot [uint64]) { throw [System.ArgumentException]::new('Preview row limit must be an integral CLR value.') }
+    $previewLimitValue = [decimal] $PreviewRowLimit
+    if ($previewLimitValue -lt 10 -or $previewLimitValue -gt 500) { throw [System.ArgumentException]::new('Preview row limit must be from 10 through 500.') }
+    $previewLimit = [int] $previewLimitValue
     if ($SelectedColumnNames.Count -eq 0) { throw [System.ArgumentException]::new('Select at least one column.') }
     $lookup = @{}; foreach ($column in $Columns) { if ($null -eq $column -or [string]::IsNullOrWhiteSpace([string] $column.Name) -or $lookup.ContainsKey($column.Name.ToLowerInvariant())) { throw [System.ArgumentException]::new('Column metadata names must be unique.') }; $lookup[$column.Name.ToLowerInvariant()] = $column }
     $selected = @(); $seen = @{}; foreach ($name in $SelectedColumnNames) { $key = $name.ToLowerInvariant(); if (-not $lookup.ContainsKey($key) -or $seen.ContainsKey($key)) { throw [System.ArgumentException]::new('Selected columns must be known and unique.') }; $seen[$key] = $true; $selected += $lookup[$key] }
     $selected = @($selected | Sort-Object Ordinal)
-    $parameters = @([pscustomobject][ordered]@{ Name='PreviewLimit'; SqlDbType=[System.Data.SqlDbType]::Int; Size=0; Precision=[byte] 0; Scale=[byte] 0; Value=$PreviewRowLimit })
+    $parameters = @([pscustomobject][ordered]@{ Name='PreviewLimit'; SqlDbType=[System.Data.SqlDbType]::Int; Size=0; Precision=[byte] 0; Scale=[byte] 0; Value=$previewLimit })
     $previewPredicates = @(); $editorPredicates = @(); $filterIndex = 0
     foreach ($filter in $Filters) {
         if ($null -eq $filter -or [string]::IsNullOrWhiteSpace([string] $filter.ColumnName) -or [string]::IsNullOrWhiteSpace([string] $filter.Operator)) { throw [System.ArgumentException]::new('Filter metadata is required.') }
@@ -164,7 +174,7 @@ function New-SqlUtilityDataExplorerQuery {
         $size = 0; if ($type -in @('char','varchar','nchar','nvarchar')) { $size = [int] $column.MaxLength; if ($type -in @('nchar','nvarchar') -and $size -gt 0) { $size = [int] ($size / 2) } }
         $precision = [byte] 0; $scale = [byte] 0; if ($type -in @('decimal','numeric')) { $precision = [byte] $column.Precision; $scale = [byte] $column.Scale } elseif ($type -in @('time','datetime2','datetimeoffset')) { $scale = [byte] $column.Scale }
         $parameters += [pscustomobject][ordered]@{ Name=$name; SqlDbType=(Get-SqlUtilityDataExplorerDbType $type); Size=$size; Precision=$precision; Scale=$scale; Value=$value }
-        $previewPredicates += "$identifier $sqlOperator @$name"; $editorPredicates += "$identifier $sqlOperator $(ConvertTo-SqlUtilityDataExplorerLiteral -Value $value -Type $type)"
+        $previewPredicates += "$identifier $sqlOperator @$name"; $editorPredicates += "$identifier $sqlOperator $(ConvertTo-SqlUtilityDataExplorerLiteral -Value $value -Column $column)"
     }
     $source = "$(ConvertTo-SqlUtilityBracketIdentifier $Table.SchemaName).$(ConvertTo-SqlUtilityBracketIdentifier $Table.TableName)"
     $output = (@($selected | ForEach-Object { ConvertTo-SqlUtilityBracketIdentifier $_.Name }) -join ', ')

@@ -78,7 +78,7 @@ No control is anchored directly to an unlaid-out `TabPage`.
 - Each filter row remains a `TableLayoutPanel`, but column, operator, value, and Remove controls share the available row width. Text and bit value controls occupy the same value cell because only one is visible at a time.
 - `PreviewGrid.ScrollBars` is explicitly `Both`. Its existing 300-pixel column-width cap remains unchanged so wide schemas scroll horizontally rather than forcing the grid outside its pane.
 
-Scrollbars must remain inside their owning pane at both default and minimum window sizes. DPI-scaled Citrix rendering remains an external acceptance check, but the container hierarchy must scale without fixed bottom/right offsets.
+Scrollbars must remain inside their owning pane throughout resizing at and above the minimum window size. They may disappear when all content fits and reappear when content exceeds the viewport, but they must never move outside the visible pane. Resizing or moving a splitter must not recreate or rebind controls, reset tables, checked columns, filters, or preview state, or unnecessarily reset the current scroll position. DPI-scaled Citrix rendering remains an external acceptance check, but the container hierarchy must scale without fixed bottom/right offsets.
 
 ## Alternatives Considered
 
@@ -105,7 +105,9 @@ Reparenting and resizing must not trigger database work, change checked output c
 Extend `tests/Test-SqlUtilityUi.ps1` with regression-first tests that fail against the flat anchored layout and assert real control behavior:
 
 - Named split/layout containers exist with the approved orientation and parent hierarchy.
-- At default `960 x 680` and minimum `760 x 520` window sizes, the table list, output list, filter panel, and preview grid bounds are fully contained by their immediate parent client rectangles.
+- At minimum `760 x 520`, default `960 x 680`, intermediate, and enlarged window sizes, the table list, output list, filter panel, and preview grid bounds are fully contained by their immediate parent client rectangles.
+- Repeated shrink, expand, and shrink cycles preserve containment, visible scrollbar ownership, builder/preview state, and the current scroll position when the content still requires scrolling.
+- Moving each splitter to its allowed minimum and maximum distances preserves pane containment and does not reset or rebind Data Explorer controls.
 - After enough table/column/filter/preview content is added, table, output, and filter scrolling remains vertical-only and visible within its pane; the preview grid is configured for both directions and remains contained.
 - Filter rows resize with the filter panel, retain visual order and values, and do not introduce a horizontal scrollbar.
 - Existing first/later Preview, filter, Send, snapshot, Export Preview, refresh, and connection-reset tests remain unchanged and pass.

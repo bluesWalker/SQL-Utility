@@ -156,6 +156,36 @@ Assert-True ($startsWithQuery.PreviewSql -notmatch "finished|A\]_") 'Preview SQL
 Assert-True ($startsWithQuery.EditorSql -match "LIKE 'A\]\[_\]\[%\]\[\[]''; --%'\r?\n\s+AND \[ProductID\] <> 'finished'") 'Editor SQL safely renders repeated string filters with quote and comment-like content'
 Assert-Equal 3 $startsWithQuery.PreviewParameters.Count 'Repeated value filters receive separate deterministic parameters'
 
+# LIKE parameter facets must describe the complete escaped pattern so Preview and editor SQL compare the same value.
+foreach ($likeCase in @(
+    @{ Type='char'; MaxLength=4; Operator='Contains'; Expected='%[%][_][[]A%'; Prefix=''; DbType=[System.Data.SqlDbType]::VarChar },
+    @{ Type='char'; MaxLength=4; Operator='StartsWith'; Expected='[%][_][[]A%'; Prefix=''; DbType=[System.Data.SqlDbType]::VarChar },
+    @{ Type='varchar'; MaxLength=4; Operator='Contains'; Expected='%[%][_][[]A%'; Prefix=''; DbType=[System.Data.SqlDbType]::VarChar },
+    @{ Type='varchar'; MaxLength=4; Operator='StartsWith'; Expected='[%][_][[]A%'; Prefix=''; DbType=[System.Data.SqlDbType]::VarChar },
+    @{ Type='nchar'; MaxLength=8; Operator='Contains'; Expected='%[%][_][[]A%'; Prefix='N'; DbType=[System.Data.SqlDbType]::NVarChar },
+    @{ Type='nchar'; MaxLength=8; Operator='StartsWith'; Expected='[%][_][[]A%'; Prefix='N'; DbType=[System.Data.SqlDbType]::NVarChar },
+    @{ Type='nvarchar'; MaxLength=8; Operator='Contains'; Expected='%[%][_][[]A%'; Prefix='N'; DbType=[System.Data.SqlDbType]::NVarChar },
+    @{ Type='nvarchar'; MaxLength=8; Operator='StartsWith'; Expected='[%][_][[]A%'; Prefix='N'; DbType=[System.Data.SqlDbType]::NVarChar }
+)) {
+    $likeColumn = [pscustomobject]@{
+        Name='Value'; Ordinal=1; SqlTypeName=$likeCase.Type; MaxLength=$likeCase.MaxLength
+        Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false
+    }
+    $likeQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($likeColumn) `
+        -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator=$likeCase.Operator; ValueText='%_[A' }
+        ) -PreviewRowLimit 100
+    Assert-Equal $likeCase.Expected $likeQuery.PreviewParameters[1].Value `
+        "$($likeCase.Type) $($likeCase.Operator) Preview preserves the complete escaped boundary pattern"
+    Assert-Equal $likeCase.Expected.Length $likeQuery.PreviewParameters[1].Size `
+        "$($likeCase.Type) $($likeCase.Operator) parameter size covers wildcards and LIKE escaping"
+    Assert-Equal $likeCase.DbType $likeQuery.PreviewParameters[1].SqlDbType `
+        "$($likeCase.Type) $($likeCase.Operator) uses an unpadded variable-width LIKE parameter"
+    $expectedPredicate = "[Value] LIKE $($likeCase.Prefix)'$($likeCase.Expected)'"
+    Assert-True ($likeQuery.EditorSql -match [regex]::Escape($expectedPredicate)) `
+        "$($likeCase.Type) $($likeCase.Operator) editor literal matches the Preview pattern exactly"
+}
+
 foreach ($invalid in @(
     @{ Name='invalid date'; Column='OrderDate'; Operator='Equals'; Value='not-a-date' },
     @{ Name='invalid time'; Column='TimeValue'; Operator='Equals'; Value='25:99:99'; Type='time' },
@@ -172,8 +202,8 @@ foreach ($invalid in @(
 foreach ($case in @(
     @{ Name='char equals'; Type='char'; MaxLength=12; Precision=0; Scale=0; Operator='Equals'; Value='AB'; Preview='[Value] = @Filter1'; Editor="[Value] = 'AB'"; Clr=[string]'AB'; DbType=[System.Data.SqlDbType]::Char; Size=12 },
     @{ Name='varchar not equals'; Type='varchar'; MaxLength=12; Precision=0; Scale=0; Operator='NotEquals'; Value='AB'; Preview='[Value] <> @Filter1'; Editor="[Value] <> 'AB'"; Clr=[string]'AB'; DbType=[System.Data.SqlDbType]::VarChar; Size=12 },
-    @{ Name='nchar contains'; Type='nchar'; MaxLength=12; Precision=0; Scale=0; Operator='Contains'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'%AB%'"; Clr=[string]'%AB%'; DbType=[System.Data.SqlDbType]::NChar; Size=6 },
-    @{ Name='nvarchar starts with'; Type='nvarchar'; MaxLength=12; Precision=0; Scale=0; Operator='StartsWith'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'AB%'"; Clr=[string]'AB%'; DbType=[System.Data.SqlDbType]::NVarChar; Size=6 },
+    @{ Name='nchar contains'; Type='nchar'; MaxLength=12; Precision=0; Scale=0; Operator='Contains'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'%AB%'"; Clr=[string]'%AB%'; DbType=[System.Data.SqlDbType]::NVarChar; Size=4 },
+    @{ Name='nvarchar starts with'; Type='nvarchar'; MaxLength=12; Precision=0; Scale=0; Operator='StartsWith'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'AB%'"; Clr=[string]'AB%'; DbType=[System.Data.SqlDbType]::NVarChar; Size=3 },
     @{ Name='tinyint greater than'; Type='tinyint'; MaxLength=1; Precision=0; Scale=0; Operator='GreaterThan'; Value='7'; Preview='[Value] > @Filter1'; Editor='[Value] > 7'; Clr=[byte]7; DbType=[System.Data.SqlDbType]::TinyInt; Size=0 },
     @{ Name='smallint greater than or equal'; Type='smallint'; MaxLength=2; Precision=0; Scale=0; Operator='GreaterThanOrEqual'; Value='7'; Preview='[Value] >= @Filter1'; Editor='[Value] >= 7'; Clr=[int16]7; DbType=[System.Data.SqlDbType]::SmallInt; Size=0 },
     @{ Name='int less than'; Type='int'; MaxLength=4; Precision=0; Scale=0; Operator='LessThan'; Value='7'; Preview='[Value] < @Filter1'; Editor='[Value] < 7'; Clr=[int]7; DbType=[System.Data.SqlDbType]::Int; Size=0 },
@@ -234,6 +264,63 @@ Assert-Throws {
         [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1000.00' }
     ) -PreviewRowLimit 100
 } 'System.ArgumentException' 'Decimal rejects values beyond catalog precision'
+
+foreach ($floatingCase in @(
+    @{ Type='real'; Input='1.2345678'; Expected='1.23456776'; ClrType=[single] },
+    @{ Type='float'; Input='1.2345678901234567'; Expected='1.2345678901234567'; ClrType=[double] }
+)) {
+    $floatingColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$floatingCase.Type; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+    $floatingQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($floatingColumn) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$floatingCase.Input }
+    ) -PreviewRowLimit 100
+    Assert-True ($floatingQuery.PreviewParameters[1].Value -is $floatingCase.ClrType) "$($floatingCase.Type) Preview keeps its exact CLR type"
+    Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [Value] = $($floatingCase.Expected);" $floatingQuery.EditorSql `
+        "$($floatingCase.Type) editor literal uses round-trip-safe invariant formatting"
+}
+
+foreach ($moneyBoundary in @(
+    @{ Type='money'; Input='922337203685477.5807' },
+    @{ Type='money'; Input='-922337203685477.5808' },
+    @{ Type='smallmoney'; Input='214748.3647' },
+    @{ Type='smallmoney'; Input='-214748.3648' }
+)) {
+    $moneyColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$moneyBoundary.Type; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+    $moneyQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($moneyColumn) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$moneyBoundary.Input }
+    ) -PreviewRowLimit 100
+    Assert-Equal $moneyBoundary.Input $moneyQuery.PreviewParameters[1].Value.ToString([System.Globalization.CultureInfo]::InvariantCulture) `
+        "$($moneyBoundary.Type) accepts exact SQL Server boundary $($moneyBoundary.Input)"
+    Assert-True ($moneyQuery.EditorSql -match [regex]::Escape("[Value] = $($moneyBoundary.Input);")) `
+        "$($moneyBoundary.Type) boundary parameter and editor literal are identical"
+}
+
+foreach ($moneyType in @('money', 'smallmoney')) {
+    $moneyColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$moneyType; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+    $trailingZeroQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($moneyColumn) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.23000' }
+    ) -PreviewRowLimit 100
+    Assert-Equal ([decimal]1.23) $trailingZeroQuery.PreviewParameters[1].Value "$moneyType accepts harmless trailing fractional zero"
+    Assert-True ($trailingZeroQuery.EditorSql -match [regex]::Escape('[Value] = 1.23;')) "$moneyType renders its normalized Preview value"
+    Assert-Throws {
+        New-SqlUtilityDataExplorerQuery -Table $table -Columns @($moneyColumn) -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.23001' }
+        ) -PreviewRowLimit 100
+    } 'System.ArgumentException' "$moneyType rejects excess nonzero fractional precision"
+}
+
+foreach ($invalidMoney in @(
+    @{ Type='money'; Input='922337203685477.5808' },
+    @{ Type='money'; Input='-922337203685477.5809' },
+    @{ Type='smallmoney'; Input='214748.3648' },
+    @{ Type='smallmoney'; Input='-214748.3649' }
+)) {
+    $moneyColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$invalidMoney.Type; MaxLength=8; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+    Assert-Throws {
+        New-SqlUtilityDataExplorerQuery -Table $table -Columns @($moneyColumn) -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$invalidMoney.Input }
+        ) -PreviewRowLimit 100
+    } 'System.ArgumentException' "$($invalidMoney.Type) rejects out-of-range value $($invalidMoney.Input)"
+}
 
 $priorCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
 try {

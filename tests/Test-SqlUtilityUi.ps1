@@ -864,6 +864,8 @@ try {
     foreach ($column in $resultsGrid.Columns) {
         Assert-True ($column.Width -le 300) 'Result columns are capped at 300 pixels'
         Assert-Equal ([System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None) $column.AutoSizeMode "Grid leaves $($column.Name) fixed after sizing"
+        Assert-Equal ([System.Windows.Forms.DataGridViewColumnSortMode]::Automatic) $column.SortMode `
+            "Query result column $($column.Name) remains client-side sortable"
     }
     $longValueColumn = $resultsGrid.Columns['Description']
     Assert-Equal 300 $longValueColumn.Width 'A long result column reaches the new cap'
@@ -1599,6 +1601,10 @@ try {
     Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
     Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'First Preview binds returned DataTable'
     Assert-Equal '2 rows displayed (unordered)' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Preview reports exact unordered rows'
+    foreach ($column in (Get-TestControl $explorerForm 'PreviewGrid').Columns) {
+        Assert-Equal ([System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable) $column.SortMode `
+            "Data Explorer Preview column $($column.Name) remains non-sortable"
+    }
 
     # Structured filters use all filterable metadata and preserve visual order.
     (Get-TestControl $explorerForm 'AddFilterButton').PerformClick()

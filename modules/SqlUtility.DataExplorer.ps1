@@ -157,7 +157,10 @@ function ConvertTo-SqlUtilityDataExplorerTypedValue {
                 $invariantText = ConvertTo-SqlUtilityDataExplorerInvariantNumberText -ValueText $ValueText -Culture $culture
                 return [System.Data.SqlTypes.SqlDecimal]::Parse($invariantText)
             }
-            { $_ -in @('smallmoney', 'money') } { return [decimal]::Parse($ValueText, [System.Globalization.NumberStyles]::Number, $culture) }
+            { $_ -in @('smallmoney', 'money') } {
+                $invariantText = ConvertTo-SqlUtilityDataExplorerInvariantNumberText -ValueText $ValueText -Culture $culture
+                return [decimal]::Parse($invariantText, [System.Globalization.NumberStyles]::Number, [System.Globalization.CultureInfo]::InvariantCulture)
+            }
             'real' { $value = [single]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([single]::IsNaN($value) -or [single]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
             'float' { $value = [double]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
             { $_ -in @('date', 'smalldatetime', 'datetime', 'datetime2') } {
@@ -233,6 +236,26 @@ function ConvertTo-SqlUtilityDataExplorerMetadataValue {
         return $normalized
     }
 
+    if ($type -in @('money', 'smallmoney')) {
+        $moneyValue = [decimal] $Value
+        $invariant = [System.Globalization.CultureInfo]::InvariantCulture
+        if ($type -eq 'money') {
+            $minimum = [decimal]::Parse('-922337203685477.5808', $invariant)
+            $maximum = [decimal]::Parse('922337203685477.5807', $invariant)
+        }
+        else {
+            $minimum = [decimal]::Parse('-214748.3648', $invariant)
+            $maximum = [decimal]::Parse('214748.3647', $invariant)
+        }
+        if ($moneyValue -lt $minimum -or $moneyValue -gt $maximum) {
+            throw [System.ArgumentException]::new("Invalid $type value: outside the SQL Server range.")
+        }
+        if ([decimal]::Round($moneyValue, 4) -ne $moneyValue) {
+            throw [System.ArgumentException]::new("Invalid $type value: fractional digits exceed scale 4.")
+        }
+        return $moneyValue
+    }
+
     if ($type -eq 'datetime') {
         try {
             return [System.Data.SqlTypes.SqlDateTime]::new([datetime] $Value).Value
@@ -291,7 +314,9 @@ function ConvertTo-SqlUtilityDataExplorerLiteral([object] $Value, [object] $Colu
     $type = Get-SqlUtilityDataExplorerColumnType $Column
     if ($Type -in @('char', 'varchar', 'nchar', 'nvarchar')) { $prefix = if ($Type -in @('nchar', 'nvarchar')) { 'N' } else { '' }; return $prefix + "'" + ([string] $Value).Replace("'", "''") + "'" }
     if ($Type -in @('decimal','numeric') -and $Value -is [System.Data.SqlTypes.SqlDecimal]) { return $Value.ToString() }
-    if ($Type -in @('tinyint','smallint','int','bigint','decimal','numeric','smallmoney','money','real','float')) { return [System.Convert]::ToString($Value, $invariant) }
+    if ($Type -eq 'real') { return ([single] $Value).ToString('G9', $invariant) }
+    if ($Type -eq 'float') { return ([double] $Value).ToString('G17', $invariant) }
+    if ($Type -in @('tinyint','smallint','int','bigint','decimal','numeric','smallmoney','money')) { return [System.Convert]::ToString($Value, $invariant) }
     if ($Type -eq 'date') { return "'$($Value.ToString('yyyy-MM-dd', $invariant))'" }
     if ($type -eq 'datetime2') {
         $scale = [int] $Column.Scale
@@ -334,10 +359,17 @@ function New-SqlUtilityDataExplorerQuery {
         $filterIndex++; $name = "Filter$filterIndex"; $type = Get-SqlUtilityDataExplorerColumnType $column; $value = ConvertTo-SqlUtilityDataExplorerTypedValue -Column $column -ValueText ([string] $filter.ValueText)
         $value = ConvertTo-SqlUtilityDataExplorerMetadataValue -Value $value -Column $column
         $sqlOperator = @{ Equals='='; NotEquals='<>'; GreaterThan='>'; GreaterThanOrEqual='>='; LessThan='<'; LessThanOrEqual='<=' }[$filter.Operator]
-        if ($filter.Operator -in @('Contains','StartsWith')) { $value = ConvertTo-SqlUtilityLikePattern -Value ([string] $value) -Operator $filter.Operator; $sqlOperator = 'LIKE' }
+        $parameterDbType = Get-SqlUtilityDataExplorerDbType $type
+        if ($filter.Operator -in @('Contains','StartsWith')) {
+            $value = ConvertTo-SqlUtilityLikePattern -Value ([string] $value) -Operator $filter.Operator
+            $sqlOperator = 'LIKE'
+            if ($type -eq 'char') { $parameterDbType = [System.Data.SqlDbType]::VarChar }
+            elseif ($type -eq 'nchar') { $parameterDbType = [System.Data.SqlDbType]::NVarChar }
+        }
         $size = 0; if ($type -in @('char','varchar','nchar','nvarchar')) { $size = [int] $column.MaxLength; if ($type -in @('nchar','nvarchar') -and $size -gt 0) { $size = [int] ($size / 2) } }
+        if ($filter.Operator -in @('Contains','StartsWith') -and $size -ne -1) { $size = ([string] $value).Length }
         $precision = [byte] 0; $scale = [byte] 0; if ($type -in @('decimal','numeric')) { $precision = [byte] $column.Precision; $scale = [byte] $column.Scale } elseif ($type -in @('time','datetime2','datetimeoffset')) { $scale = [byte] $column.Scale }
-        $parameters += [pscustomobject][ordered]@{ Name=$name; SqlDbType=(Get-SqlUtilityDataExplorerDbType $type); Size=$size; Precision=$precision; Scale=$scale; Value=$value }
+        $parameters += [pscustomobject][ordered]@{ Name=$name; SqlDbType=$parameterDbType; Size=$size; Precision=$precision; Scale=$scale; Value=$value }
         $previewPredicates += "$identifier $sqlOperator @$name"; $editorPredicates += "$identifier $sqlOperator $(ConvertTo-SqlUtilityDataExplorerLiteral -Value $value -Column $column)"
     }
     $source = "$(ConvertTo-SqlUtilityBracketIdentifier $Table.SchemaName).$(ConvertTo-SqlUtilityBracketIdentifier $Table.TableName)"

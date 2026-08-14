@@ -528,9 +528,13 @@ function Update-SqlUtilityQueryActionState {
 }
 
 function Set-SqlUtilityGridData {
-    param($Grid,[System.Data.DataTable]$DataTable)
+    param(
+        $Grid,
+        [System.Data.DataTable]$DataTable,
+        [System.Windows.Forms.DataGridViewColumnSortMode]$SortMode = [System.Windows.Forms.DataGridViewColumnSortMode]::Automatic
+    )
     $Grid.DataSource=$null; $Grid.Columns.Clear(); $Grid.AutoGenerateColumns=$true; $Grid.DataSource=$DataTable
-    foreach($column in $Grid.Columns){$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells;$Grid.AutoResizeColumn($column.Index,[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells);$width=[Math]::Min(300,$column.Width);$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None;$column.Width=$width;$column.SortMode=[System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable}
+    foreach($column in $Grid.Columns){$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells;$Grid.AutoResizeColumn($column.Index,[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells);$width=[Math]::Min(300,$column.Width);$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None;$column.Width=$width;$column.SortMode=$SortMode}
 }
 
 function Update-SqlUtilityDataExplorerTableList {
@@ -624,8 +628,8 @@ function Invoke-SqlUtilityDataExplorerPreview {
 function Set-SqlUtilityDataExplorerPreviewDisplay {
     param([System.Windows.Forms.Form]$Form,$Candidate)
     $state=$Form.Tag;$prior=$state.DataExplorerPreview;$grid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$source=Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel';$status=Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel'
-    try{Set-SqlUtilityGridData $grid $Candidate.Data;$source.Text=$Candidate.SourceTable;$status.Text="$($Candidate.Data.Rows.Count) rows displayed (unordered)";$state.DataExplorerPreview=$Candidate;Update-SqlUtilityDataExplorerActionState $Form}
-    catch{if($prior){Set-SqlUtilityGridData $grid $prior.Data;$source.Text=$prior.SourceTable;$status.Text="$($prior.Data.Rows.Count) rows displayed (unordered)"}else{$grid.DataSource=$null;$grid.Columns.Clear();$source.Text='';$status.Text=''};$state.DataExplorerPreview=$prior;throw}
+    try{Set-SqlUtilityGridData $grid $Candidate.Data -SortMode NotSortable;$source.Text=$Candidate.SourceTable;$status.Text="$($Candidate.Data.Rows.Count) rows displayed (unordered)";$state.DataExplorerPreview=$Candidate;Update-SqlUtilityDataExplorerActionState $Form}
+    catch{if($prior){Set-SqlUtilityGridData $grid $prior.Data -SortMode NotSortable;$source.Text=$prior.SourceTable;$status.Text="$($prior.Data.Rows.Count) rows displayed (unordered)"}else{$grid.DataSource=$null;$grid.Columns.Clear();$source.Text='';$status.Text=''};$state.DataExplorerPreview=$prior;throw}
 }
 
 function Invoke-SqlUtilityDataExplorerExportPreview {

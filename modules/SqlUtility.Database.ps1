@@ -90,12 +90,25 @@ function Copy-SqlUtilityDataRows {
     return (, $copy)
 }
 
+function Add-SqlUtilityCommandParameters(
+    $Command,
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $ParameterDescriptors
+) {
+    foreach ($descriptor in @($ParameterDescriptors)) {
+        $parameter = $Command.Parameters.Add('@' + [string] $descriptor.Name, $descriptor.SqlDbType)
+        if ([int] $descriptor.Size -ne 0) { $parameter.Size = [int] $descriptor.Size }
+        if ([byte] $descriptor.Precision -ne 0) { $parameter.Precision = [byte] $descriptor.Precision }
+        if ([byte] $descriptor.Scale -ne 0) { $parameter.Scale = [byte] $descriptor.Scale }
+        $parameter.Value = if ($null -eq $descriptor.Value) { [DBNull]::Value } else { $descriptor.Value }
+    }
+}
+
 function Invoke-SqlUtilityTableExecutor {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string] $ConnectionString,
         [Parameter(Mandatory = $true)][string] $CommandText,
-        [Parameter(Mandatory = $true)][hashtable] $Parameters,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $ParameterDescriptors,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
         [Parameter(Mandatory = $true)][int] $MaximumRows
     )
@@ -108,12 +121,7 @@ function Invoke-SqlUtilityTableExecutor {
             $command.CommandText = $CommandText
             $command.CommandTimeout = $CommandTimeoutSeconds
 
-            foreach ($parameterName in @('Offset', 'FetchCount')) {
-                if ($Parameters.ContainsKey($parameterName)) {
-                    $parameter = $command.Parameters.Add("@$parameterName", [System.Data.SqlDbType]::Int)
-                    $parameter.Value = [int] $Parameters[$parameterName]
-                }
-            }
+            Add-SqlUtilityCommandParameters -Command $command -ParameterDescriptors $ParameterDescriptors
 
             $reader = $null
             try {
@@ -250,7 +258,7 @@ function Invoke-SqlUtilityConnectionTest {
 
     $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
     if ($null -ne $Executor) {
-        $null = & $Executor $connectionString 'SELECT 1;' @{} 10 1
+        $null = & $Executor $connectionString 'SELECT 1;' ([object[]] @()) 10 1
         return
     }
 
@@ -272,6 +280,132 @@ function Invoke-SqlUtilityConnectionTest {
     }
 }
 
+function Format-SqlUtilityDatabaseIdentifier([string] $Name) {
+    return '[' + $Name.Replace(']', ']]') + ']'
+}
+
+function Get-SqlUtilityPhysicalTables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Server,
+        [Parameter(Mandatory = $true)][string] $Database,
+        [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [scriptblock] $Executor
+    )
+
+    $commandText = @'
+SELECT t.object_id AS ObjectId, s.name AS SchemaName, t.name AS TableName
+FROM sys.tables AS t
+INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+WHERE t.is_ms_shipped = 0
+ORDER BY s.name, t.name;
+'@
+    $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    $parameters = [object[]] @()
+    if ($null -eq $Executor) {
+        $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $commandText `
+            -ParameterDescriptors $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows ([int]::MaxValue)
+    }
+    else {
+        $data = & $Executor $connectionString $commandText $parameters $CommandTimeoutSeconds ([int]::MaxValue)
+    }
+
+    return @($data.Rows | ForEach-Object {
+        [pscustomobject][ordered]@{
+            ObjectId = [int] $_.ObjectId
+            SchemaName = [string] $_.SchemaName
+            TableName = [string] $_.TableName
+            DisplayName = (Format-SqlUtilityDatabaseIdentifier ([string] $_.SchemaName)) + '.' + `
+                (Format-SqlUtilityDatabaseIdentifier ([string] $_.TableName))
+        }
+    })
+}
+
+function Get-SqlUtilityTableColumns {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Server,
+        [Parameter(Mandatory = $true)][string] $Database,
+        [Parameter(Mandatory = $true)][int] $TableObjectId,
+        [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [scriptblock] $Executor
+    )
+
+    $commandText = @'
+SELECT t.object_id AS ObjectId,
+       s.name AS SchemaName,
+       t.name AS TableName,
+       c.name AS Name,
+       c.column_id AS Ordinal,
+       base_type.name AS SqlTypeName,
+       c.max_length AS MaxLength,
+       c.precision AS [Precision],
+       c.scale AS Scale,
+       c.is_nullable AS IsNullable,
+       CONVERT(bit, CASE WHEN declared_type.is_user_defined = 1
+                              OR declared_type.is_assembly_type = 1
+                         THEN 1 ELSE 0 END) AS IsUserDefined
+FROM sys.tables AS t
+INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+INNER JOIN sys.columns AS c ON c.object_id = t.object_id
+INNER JOIN sys.types AS declared_type ON declared_type.user_type_id = c.user_type_id
+INNER JOIN sys.types AS base_type
+    ON base_type.system_type_id = c.system_type_id
+   AND base_type.user_type_id = base_type.system_type_id
+WHERE t.is_ms_shipped = 0
+  AND t.object_id = @TableObjectId
+ORDER BY c.column_id;
+'@
+    $parameters = [object[]] @(
+        [pscustomobject]@{ Name = 'TableObjectId'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = $TableObjectId }
+    )
+    $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    if ($null -eq $Executor) {
+        $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $commandText `
+            -ParameterDescriptors $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows ([int]::MaxValue)
+    }
+    else {
+        $data = & $Executor $connectionString $commandText $parameters $CommandTimeoutSeconds ([int]::MaxValue)
+    }
+
+    return @($data.Rows | ForEach-Object {
+        [pscustomobject][ordered]@{
+            Name = [string] $_.Name
+            Ordinal = [int] $_.Ordinal
+            SqlTypeName = [string] $_.SqlTypeName
+            MaxLength = [int] $_.MaxLength
+            Precision = [byte] $_.Precision
+            Scale = [byte] $_.Scale
+            IsNullable = [bool] $_.IsNullable
+            IsUserDefined = [bool] $_.IsUserDefined
+        }
+    })
+}
+
+function Invoke-SqlUtilityDataPreview {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Server,
+        [Parameter(Mandatory = $true)][string] $Database,
+        [Parameter(Mandatory = $true)] $Query,
+        [Parameter(Mandatory = $true)][int] $PreviewRowLimit,
+        [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [scriptblock] $Executor
+    )
+
+    if ($PreviewRowLimit -lt 10 -or $PreviewRowLimit -gt 500) {
+        throw [System.ArgumentOutOfRangeException]::new('PreviewRowLimit', 'Preview row limit must be from 10 through 500.')
+    }
+
+    $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    if ($null -eq $Executor) {
+        return Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $Query.PreviewSql `
+            -ParameterDescriptors $Query.PreviewParameters -CommandTimeoutSeconds $CommandTimeoutSeconds `
+            -MaximumRows $PreviewRowLimit
+    }
+    return & $Executor $connectionString $Query.PreviewSql $Query.PreviewParameters $CommandTimeoutSeconds $PreviewRowLimit
+}
+
 function Invoke-SqlUtilityOrderedPage {
     [CmdletBinding()]
     param(
@@ -289,10 +423,13 @@ function Invoke-SqlUtilityOrderedPage {
 
     $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
     $commandText = $Sql + "`r`nOFFSET @Offset ROWS FETCH NEXT @FetchCount ROWS ONLY"
-    $parameters = @{ Offset = (($PageNumber - 1) * 500); FetchCount = 501 }
+    $parameters = [object[]] @(
+        [pscustomobject]@{ Name = 'Offset'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = (($PageNumber - 1) * 500) },
+        [pscustomobject]@{ Name = 'FetchCount'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = 501 }
+    )
     if ($null -eq $Executor) {
         $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $commandText `
-            -Parameters $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows 501
+            -ParameterDescriptors $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows 501
     }
     else {
         $data = & $Executor $connectionString $commandText $parameters $CommandTimeoutSeconds 501
@@ -319,10 +456,10 @@ function Invoke-SqlUtilityUnorderedQuery {
     $maximumRows = $RowLimit + 1
     if ($null -eq $Executor) {
         $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $Sql `
-            -Parameters @{} -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows $maximumRows
+            -ParameterDescriptors ([object[]] @()) -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows $maximumRows
     }
     else {
-        $data = & $Executor $connectionString $Sql @{} $CommandTimeoutSeconds $maximumRows
+        $data = & $Executor $connectionString $Sql ([object[]] @()) $CommandTimeoutSeconds $maximumRows
     }
 
     $isTruncated = $data.Rows.Count -gt $RowLimit

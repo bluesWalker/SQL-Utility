@@ -644,11 +644,15 @@ finally {
 
 # Settings enter application state only after a successful write.
 $settingsHarness = New-TestServices
-$settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $settingsHarness.Services
+$settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig -WithConnections) -ConfigPath 'C:\test\config.json' -Services $settingsHarness.Services
 try {
     Show-TestForm $settingsForm
     $settingsForm.Tag.Config.previewRowLimit = 250
-    (Get-TestControl $settingsForm 'PreviewLimitNumeric').Value = 250
+    $previewNumeric = Get-TestControl $settingsForm 'PreviewLimitNumeric'
+    $previewNumeric.Value = 275
+    $settingsPreviewData = New-TestDataTable -RowCount 2
+    $settingsPreview = [pscustomobject][ordered]@{ SourceTable='[dbo].[SettingsSnapshot]'; Data=$settingsPreviewData }
+    Set-SqlUtilityDataExplorerPreviewDisplay -Form $settingsForm -Candidate $settingsPreview
     $unorderedNumeric = Get-TestControl $settingsForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
@@ -659,16 +663,35 @@ try {
     $timeoutNumeric.Value = 300
     $settingsHarness.Recorder.WriteError = 'read-only directory'
     $saveSettings.PerformClick()
+    $failedCandidate = $settingsHarness.Recorder.WriteCalls[0].Config
+    Assert-Equal 2 $failedCandidate.schemaVersion 'Settings candidate writes schema version 2'
+    Assert-Equal 275 $failedCandidate.previewRowLimit 'Settings candidate writes visible preview limit'
+    Assert-Equal 1500 $failedCandidate.unorderedRowLimit 'Settings candidate writes unordered limit'
+    Assert-Equal 300 $failedCandidate.queryExportTimeoutSeconds 'Settings candidate writes timeout'
+    Assert-Equal 2 @($failedCandidate.connections).Count 'Settings candidate preserves connections'
+    Assert-Equal 'SavedServer' $failedCandidate.connections[0].server 'Settings candidate preserves first connection'
+    Assert-Equal 'SecondDatabase' $failedCandidate.connections[1].database 'Settings candidate preserves second connection'
     Assert-Equal 1000 $settingsForm.Tag.Config.unorderedRowLimit 'Failed settings write keeps active row limit'
     Assert-Equal 120 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Failed settings write keeps active timeout'
     Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Failed settings write keeps active preview limit'
+    Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Failed settings write preserves displayed preview snapshot'
+    Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Failed settings write preserves displayed preview grid'
     Assert-Equal $false $settingsForm.Tag.IsBusy 'Settings exception restores busy state'
 
     $settingsHarness.Recorder.WriteError = $null
     $saveSettings.PerformClick()
     Assert-Equal 1500 $settingsForm.Tag.Config.unorderedRowLimit 'Successful settings write enters row limit state'
     Assert-Equal 300 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Successful settings write enters timeout state'
-    Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Successful settings write preserves preview limit'
+    $successfulCandidate = $settingsHarness.Recorder.WriteCalls[1].Config
+    Assert-Equal 2 $successfulCandidate.schemaVersion 'Successful Settings candidate keeps schema version 2'
+    Assert-Equal 275 $successfulCandidate.previewRowLimit 'Successful Settings candidate keeps preview limit'
+    Assert-Equal 1500 $successfulCandidate.unorderedRowLimit 'Successful Settings candidate keeps unordered limit'
+    Assert-Equal 300 $successfulCandidate.queryExportTimeoutSeconds 'Successful Settings candidate keeps timeout'
+    Assert-Equal 2 @($successfulCandidate.connections).Count 'Successful Settings candidate keeps connections'
+    Assert-Equal 275 $settingsForm.Tag.Config.previewRowLimit 'Successful settings write enters preview limit state'
+    Assert-Equal 275 ([int] $previewNumeric.Value) 'Successful settings write synchronizes preview numeric'
+    Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Successful settings write preserves displayed preview snapshot'
+    Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Successful settings write preserves displayed preview grid'
 }
 finally {
     $settingsForm.Close()

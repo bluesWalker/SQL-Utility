@@ -1345,6 +1345,7 @@ try {
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
     (Get-TestControl $explorerForm 'PhysicalTablesList').SelectedIndex = 0
     Assert-Equal 0 $explorerHarness.Recorder.ColumnCalls.Count 'Selecting table does not load metadata'
+    Assert-Equal 0 $explorerHarness.Recorder.PreviewCalls.Count 'Selecting table does not execute preview'
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'First Preview loads metadata once'
     Assert-Equal 1 $explorerHarness.Recorder.BuildExplorerCalls.Count 'First Preview builds one query'
@@ -1361,7 +1362,98 @@ try {
     $previewLimit = Get-TestControl $explorerForm 'PreviewLimitNumeric'
     Assert-Equal 10 ([int] $previewLimit.Minimum) 'Preview limit minimum is 10'
     Assert-Equal 500 ([int] $previewLimit.Maximum) 'Preview limit maximum is 500'
+
+    # Query execution must not disturb an independent Explorer snapshot.
+    $priorExplorerSnapshot = $explorerForm.Tag.DataExplorerPreview
+    $explorerHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 1) -PageNumber 1
+    (Get-TestControl $explorerForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $explorerForm 'ExecuteButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Query execution preserves Explorer snapshot'
+    Assert-Equal $true $explorerForm.Tag.DataExplorerTablesLoaded 'Query execution preserves loaded catalog state'
+
+    # Refresh retains a matching object id, resets the builder, and preserves preview.
+    (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
+    (Get-TestControl $explorerForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal 1 $explorerForm.Tag.DataExplorerBuilder.Table.ObjectId 'Refresh retains matching table object id'
+    Assert-Equal 0 @($explorerForm.Tag.DataExplorerBuilder.Columns).Count 'Refresh resets cached metadata'
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Refresh preserves preview snapshot'
+    $explorerHarness.Recorder.TablesResult = @($explorerHarness.Recorder.TablesResult | Where-Object ObjectId -ne 1)
+    (Get-TestControl $explorerForm 'RefreshTablesButton').PerformClick()
+    Assert-True ($null -eq $explorerForm.Tag.DataExplorerBuilder.Table) 'Refresh clears a removed table selection'
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Removed selection still preserves preview snapshot'
+
+    # Confirmed connection reset clears every Explorer state and display surface.
+    Reset-SqlUtilityWorkspaceState $explorerForm
+    Assert-Equal $false $explorerForm.Tag.DataExplorerTablesLoaded 'Connection reset clears loaded marker'
+    Assert-Equal 0 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Connection reset clears table list'
+    Assert-Equal 0 (Get-TestControl $explorerForm 'OutputColumnsList').Items.Count 'Connection reset clears output list'
+    Assert-True ($null -eq (Get-TestControl $explorerForm 'PreviewGrid').DataSource) 'Connection reset clears preview grid'
+    Assert-Equal '' (Get-TestControl $explorerForm 'PreviewSourceLabel').Text 'Connection reset clears preview source'
+    Assert-Equal '' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Connection reset clears preview status'
 }
 finally { $explorerForm.Dispose() }
+
+# Failed initial catalog load remains retryable.
+$catalogRetryHarness = New-TestServices
+$catalogRetryHarness.Recorder.TableError = 'catalog unavailable'
+$catalogRetryForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $catalogRetryHarness.Services
+try {
+    Show-TestForm $catalogRetryForm; Enter-TestWorkspace $catalogRetryForm
+    (Get-TestControl $catalogRetryForm 'WorkspaceTabs').SelectedTab = Get-TestControl $catalogRetryForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal $false $catalogRetryForm.Tag.DataExplorerTablesLoaded 'Failed initial catalog remains unloaded'
+    $catalogRetryHarness.Recorder.TableError = $null
+    (Get-TestControl $catalogRetryForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal $true $catalogRetryForm.Tag.DataExplorerTablesLoaded 'Refresh retries failed initial catalog'
+    Assert-Equal 2 $catalogRetryHarness.Recorder.TableCalls.Count 'Catalog retry makes a second call'
+}
+finally { $catalogRetryForm.Dispose() }
+
+# Preview failures preserve the last successful display; row failure retains newly loaded metadata.
+$failureHarness = New-TestServices
+$oldPreview = New-TestDataTable -RowCount 1
+$failureHarness.Recorder.PreviewResult = $oldPreview
+$failureForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $failureHarness.Services
+try {
+    Show-TestForm $failureForm; Enter-TestWorkspace $failureForm
+    (Get-TestControl $failureForm 'WorkspaceTabs').SelectedTab = Get-TestControl $failureForm 'DataExplorerTab'; [System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $failureForm 'PhysicalTablesList').SelectedIndex=0; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    $oldSnapshot=$failureForm.Tag.DataExplorerPreview
+    (Get-TestControl $failureForm 'RefreshTablesButton').PerformClick()
+    $failureHarness.Recorder.ColumnError='metadata failed'; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Metadata failure preserves snapshot'
+    Assert-True ([object]::ReferenceEquals($oldPreview,(Get-TestControl $failureForm 'PreviewGrid').DataSource)) 'Metadata failure preserves grid'
+    $failureHarness.Recorder.ColumnError=$null; $failureHarness.Recorder.PreviewError='rows failed'; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-Equal 4 @($failureForm.Tag.DataExplorerBuilder.Columns).Count 'Row failure retains loaded metadata'
+    Assert-Equal 4 (Get-TestControl $failureForm 'OutputColumnsList').CheckedItems.Count 'Row failure retains all-selected output'
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Row failure preserves snapshot'
+
+    # Rendering failure rolls back partially changed UI and state.
+    $failureHarness.Recorder.PreviewError=$null; $newPreview=New-TestDataTable -RowCount 3; $failureHarness.Recorder.PreviewResult=$newPreview
+    $script:previewBindingChanges=0
+    (Get-TestControl $failureForm 'PreviewGrid').Add_DataSourceChanged({$script:previewBindingChanges++;if($script:previewBindingChanges-eq 1){throw 'render failed'}})
+    (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Rendering failure preserves snapshot state'
+    Assert-True ([object]::ReferenceEquals($oldPreview,(Get-TestControl $failureForm 'PreviewGrid').DataSource)) 'Rendering failure restores prior grid'
+    Assert-Equal $oldSnapshot.SourceTable (Get-TestControl $failureForm 'PreviewSourceLabel').Text 'Rendering failure restores source label'
+
+    # Empty preview remains successful and keeps schema.
+    $emptyPreview=New-TestDataTable -RowCount 0; $failureHarness.Recorder.PreviewResult=$emptyPreview
+    (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-Equal 0 (Get-TestControl $failureForm 'PreviewGrid').Rows.Count 'Empty preview displays zero rows'
+    Assert-Equal 2 (Get-TestControl $failureForm 'PreviewGrid').Columns.Count 'Empty preview preserves schema columns'
+    Assert-Equal '0 rows displayed (unordered)' (Get-TestControl $failureForm 'PreviewStatusLabel').Text 'Empty preview reports zero rows'
+
+    $displayed=$failureForm.Tag.DataExplorerPreview
+    (Get-TestControl $failureForm 'SelectNoColumnsButton').PerformClick(); (Get-TestControl $failureForm 'SelectAllColumnsButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($displayed,$failureForm.Tag.DataExplorerPreview)) 'All and None preserve displayed snapshot'
+
+    # Failed settings save keeps active limit and preview.
+    (Get-TestControl $failureForm 'PreviewLimitNumeric').Value=321; $failureHarness.Recorder.WriteError='settings failed'
+    (Get-TestControl $failureForm 'SaveSettingsButton').PerformClick()
+    Assert-Equal 100 $failureForm.Tag.Config.previewRowLimit 'Failed settings save preserves active preview limit'
+    Assert-True ([object]::ReferenceEquals($displayed,$failureForm.Tag.DataExplorerPreview)) 'Failed settings save preserves preview snapshot'
+}
+finally { $failureForm.Dispose() }
 
 Complete-TestFile 'All SQL Utility UI tests passed.'

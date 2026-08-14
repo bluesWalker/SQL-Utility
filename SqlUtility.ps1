@@ -539,7 +539,14 @@ function Invoke-SqlUtilityLoadDataExplorerTables {
 
 function Invoke-SqlUtilityDataExplorerPreview {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;$out.Items.Clear();foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)};$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$s.DataExplorerBuilder.SelectedColumnNames=$names;$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names @() $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$s.DataExplorerPreview=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityGridData (Get-SqlUtilityNamedControl $Form 'PreviewGrid') $data;(Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel').Text=$s.DataExplorerPreview.SourceTable;(Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel').Text="$($data.Rows.Count) rows displayed (unordered)"}catch{Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.'}
+    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;$out.Items.Clear();foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)};$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$s.DataExplorerBuilder.SelectedColumnNames=$names;$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names @() $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$candidate=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityDataExplorerPreviewDisplay $Form $candidate} catch {Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.'}
+}
+
+function Set-SqlUtilityDataExplorerPreviewDisplay {
+    param([System.Windows.Forms.Form]$Form,$Candidate)
+    $state=$Form.Tag;$prior=$state.DataExplorerPreview;$grid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$source=Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel';$status=Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel'
+    try{Set-SqlUtilityGridData $grid $Candidate.Data;$source.Text=$Candidate.SourceTable;$status.Text="$($Candidate.Data.Rows.Count) rows displayed (unordered)";$state.DataExplorerPreview=$Candidate}
+    catch{if($prior){Set-SqlUtilityGridData $grid $prior.Data;$source.Text=$prior.SourceTable;$status.Text="$($prior.Data.Rows.Count) rows displayed (unordered)"}else{$grid.DataSource=$null;$grid.Columns.Clear();$source.Text='';$status.Text=''};$state.DataExplorerPreview=$prior;throw}
 }
 
 function Show-SqlUtilityPage {
@@ -573,10 +580,6 @@ function Invoke-SqlUtilityQueryAction {
     $sqlEditor = Get-SqlUtilityNamedControl -Root $Form -Name 'SqlEditor'
     $editorSql = [string] $sqlEditor.Text
     Clear-SqlUtilityQueryResult -Form $Form
-    $state.DataExplorerTablesLoaded = $false
-    $state.DataExplorerTables = @()
-    $state.DataExplorerBuilder = [pscustomobject][ordered]@{ Table=$null; Columns=@(); SelectedColumnNames=@(); Filters=@() }
-    $state.DataExplorerPreview = $null
     Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Executing query...'
     try {
         $validateQuery = $state.Services['ValidateQuery']
@@ -772,6 +775,15 @@ function Reset-SqlUtilityWorkspaceState {
     $state.ActiveServer = ''
     $state.ActiveDatabase = ''
     Clear-SqlUtilityQueryResult -Form $Form
+    $state.DataExplorerTablesLoaded = $false
+    $state.DataExplorerTables = @()
+    $state.DataExplorerBuilder = [pscustomobject][ordered]@{ Table=$null; Columns=@(); SelectedColumnNames=@(); Filters=@() }
+    $state.DataExplorerPreview = $null
+    foreach($listName in @('PhysicalTablesList','OutputColumnsList')){(Get-SqlUtilityNamedControl $Form $listName).Items.Clear()}
+    $previewGrid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$previewGrid.DataSource=$null;$previewGrid.Columns.Clear()
+    (Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel').Text=''
+    (Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel').Text=''
+    (Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=$false
 
     foreach ($textBoxName in @('ServerTextBox', 'DatabaseTextBox', 'SqlEditor')) {
         $textBox = Get-SqlUtilityNamedControl -Root $Form -Name $textBoxName

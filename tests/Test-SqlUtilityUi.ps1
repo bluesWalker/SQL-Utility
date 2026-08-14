@@ -1419,6 +1419,11 @@ try {
     $filterColumn2.SelectedIndex = 1
     $filterOperator2.SelectedIndex = 4
     Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueText2').Enabled 'Value-free operator disables its value input'
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueText2').Visible 'Value-free text operator hides its value input'
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueBitCombo2').Visible 'Value-free text operator keeps bit input hidden'
+    $filterOperator2.SelectedIndex = 2
+    Assert-Equal $true (Get-TestControl $explorerForm 'FilterValueText2').Visible 'Value-bearing text operator shows its text input again'
+    Assert-Equal $true (Get-TestControl $explorerForm 'FilterValueText2').Enabled 'Value-bearing text operator enables its text input again'
 
     # Send uses current builder state, confirms replacement, selects Query, and never executes it.
     $sendButton = Get-TestControl $explorerForm 'SendToQueryButton'
@@ -1479,7 +1484,7 @@ finally { $explorerForm.Dispose() }
 
 # Bit filters use a constrained Boolean selector and emit its neutral label.
 $bitHarness = New-TestServices
-$bitHarness.Recorder.ColumnsResult += [pscustomobject]@{ Name='IsActive'; Ordinal=5; SqlTypeName='bit'; MaxLength=1; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+$bitHarness.Recorder.ColumnsResult += [pscustomobject]@{ Name='IsActive'; Ordinal=5; SqlTypeName='bit'; MaxLength=1; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
 $bitHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 1
 $bitForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $bitHarness.Services
 try {
@@ -1490,6 +1495,14 @@ try {
     $bitColumn=Get-TestControl $bitForm 'FilterColumnCombo1';$bitColumn.SelectedIndex=3
     $bitValue=Get-TestControl $bitForm 'FilterValueBitCombo1'
     Assert-Equal 'True,False' (@($bitValue.Items)-join ',') 'Bit value selector is constrained to Boolean labels'
+    $bitOperator=Get-TestControl $bitForm 'FilterOperatorCombo1';$bitOperator.SelectedIndex=2
+    Assert-Equal $false $bitValue.Visible 'Value-free bit operator hides its bit input'
+    Assert-Equal $false $bitValue.Enabled 'Value-free bit operator disables its bit input'
+    Assert-Equal $false (Get-TestControl $bitForm 'FilterValueText1').Visible 'Value-free bit operator keeps text input hidden'
+    $bitOperator.SelectedIndex=0
+    Assert-Equal $true $bitValue.Visible 'Value-bearing bit operator shows its bit input again'
+    Assert-Equal $true $bitValue.Enabled 'Value-bearing bit operator enables its bit input again'
+    Assert-Equal $false (Get-TestControl $bitForm 'FilterValueText1').Visible 'Value-bearing bit operator keeps text input hidden'
     $bitValue.SelectedItem='False';(Get-TestControl $bitForm 'PreviewButton').PerformClick()
     $bitBuild=$bitHarness.Recorder.BuildExplorerCalls[$bitHarness.Recorder.BuildExplorerCalls.Count-1]
     Assert-Equal 'False' $bitBuild.Filters[0].ValueText 'Bit filter emits selected neutral label'

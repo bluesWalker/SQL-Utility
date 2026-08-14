@@ -560,7 +560,7 @@ function Add-SqlUtilityDataExplorerFilterRow {
     $row.Tag=[pscustomobject]@{RowNumber=$n;ColumnCombo=$column;OperatorCombo=$operator;ValueText=$text;ValueBitCombo=$bit;RemoveButton=$remove}
     $refreshValue={
         $selected=$operator.SelectedItem;$requires=($selected-and[bool]$selected.RequiresValue);$isBit=($column.SelectedItem-and$column.SelectedItem.Column.SqlTypeName-eq'bit')
-        $text.Visible=(-not$isBit);$text.Enabled=($requires-and-not$isBit);$bit.Visible=$isBit;$bit.Enabled=($requires-and$isBit)
+        $text.Visible=($requires-and-not$isBit);$text.Enabled=($requires-and-not$isBit);$bit.Visible=($requires-and$isBit);$bit.Enabled=($requires-and$isBit)
     }.GetNewClosure()
     $column.Add_SelectedIndexChanged({$operator.Items.Clear();if($column.SelectedItem){foreach($op in @(Get-SqlUtilityDataExplorerOperators -Column $column.SelectedItem.Column)){[void]$operator.Items.Add($op)};if($operator.Items.Count){$operator.SelectedIndex=0}};&$refreshValue}.GetNewClosure())
     $operator.Add_SelectedIndexChanged({&$refreshValue}.GetNewClosure())

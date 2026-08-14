@@ -68,7 +68,8 @@ function New-SqlUtilityDefaultConfig {
     param()
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
+        previewRowLimit = 100
         unorderedRowLimit = 1000
         queryExportTimeoutSeconds = 120
         connections = @()
@@ -85,7 +86,15 @@ function ConvertTo-SqlUtilityValidatedConfig {
     if (-not (Test-SqlUtilityIntegralValue -Value $schemaVersion)) {
         throw [System.ArgumentException]::new('schemaVersion must be an integer.')
     }
-    if ($schemaVersion -ne 1) {
+    if ($schemaVersion -eq 1) {
+        $previewRowLimit = 100
+    }
+    elseif ($schemaVersion -eq 2) {
+        $previewRowLimit = ConvertTo-SqlUtilityValidatedInteger `
+            -Value (Get-SqlUtilityConfigPropertyValue -InputObject $InputObject -Name 'previewRowLimit') `
+            -Minimum 10 -Maximum 500 -Name 'previewRowLimit'
+    }
+    else {
         throw [System.NotSupportedException]::new("Unsupported configuration schema version: $schemaVersion")
     }
 
@@ -126,7 +135,8 @@ function ConvertTo-SqlUtilityValidatedConfig {
     }
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
+        previewRowLimit = $previewRowLimit
         unorderedRowLimit = $unorderedRowLimit
         queryExportTimeoutSeconds = $queryExportTimeoutSeconds
         connections = @($connections.ToArray())
@@ -280,6 +290,7 @@ function Add-SqlUtilitySavedConnection {
 
     return ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
         schemaVersion = $validated.schemaVersion
+        previewRowLimit = $validated.previewRowLimit
         unorderedRowLimit = $validated.unorderedRowLimit
         queryExportTimeoutSeconds = $validated.queryExportTimeoutSeconds
         connections = @($connections.ToArray())
@@ -315,6 +326,7 @@ function Remove-SqlUtilitySavedConnection {
 
     return ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
         schemaVersion = $validated.schemaVersion
+        previewRowLimit = $validated.previewRowLimit
         unorderedRowLimit = $validated.unorderedRowLimit
         queryExportTimeoutSeconds = $validated.queryExportTimeoutSeconds
         connections = @($connections.ToArray())

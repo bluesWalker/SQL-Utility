@@ -105,7 +105,7 @@ The supported matrix is:
 
 | SQL type family | Operators |
 | --- | --- |
-| `char`, `varchar`, `nchar`, `nvarchar` | equals, contains, starts with; plus is null/is not null when nullable |
+| `char`, `varchar`, `nchar`, `nvarchar` | equals, not equals, contains, starts with; plus is null/is not null when nullable |
 | Integer, decimal, money, floating-point | `=`, `<>`, `>`, `>=`, `<`, `<=`; plus is null/is not null when nullable |
 | `date`, `time`, `smalldatetime`, `datetime`, `datetime2`, `datetimeoffset` | `=`, `<>`, `>`, `>=`, `<`, `<=`; plus is null/is not null when nullable |
 | `bit` | equals, not equals; plus is null/is not null when nullable |

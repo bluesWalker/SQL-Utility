@@ -1388,6 +1388,136 @@ finally {
     }
 }
 
+# Data Explorer resize keeps large real-control state and scroll ownership stable.
+$layoutHarness = New-TestServices
+$layoutHarness.Recorder.TablesResult = @(1..100 | ForEach-Object {
+    [pscustomobject]@{ ObjectId=$_; SchemaName='dbo'; TableName=('Table{0:D3}' -f $_); DisplayName=('[dbo].[Table{0:D3}]' -f $_) }
+})
+$layoutHarness.Recorder.ColumnsResult = @(1..80 | ForEach-Object {
+    [pscustomobject]@{ Name=('Column{0:D3}' -f $_); Ordinal=$_; SqlTypeName='nvarchar'; MaxLength=100; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+})
+$layoutPreview = [System.Data.DataTable]::new()
+foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
+    [void] $layoutPreview.Columns.Add($column.Name, [string])
+}
+foreach ($rowNumber in 1..100) {
+    $row = $layoutPreview.NewRow()
+    foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
+        $row[$column.Name] = ('value-{0:D3}-abcdefghijklmnopqrstuvwxy' -f $rowNumber)
+    }
+    [void] $layoutPreview.Rows.Add($row)
+}
+$layoutHarness.Recorder.PreviewResult = $layoutPreview
+$layoutForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $layoutHarness.Services
+try {
+    Show-TestForm $layoutForm
+    Enter-TestWorkspace $layoutForm
+    $workspaceTabs = Get-TestControl $layoutForm 'WorkspaceTabs'
+    $workspaceTabs.SelectedTab = Get-TestControl $layoutForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $tableList = Get-TestControl $layoutForm 'PhysicalTablesList'
+    $outputList = Get-TestControl $layoutForm 'OutputColumnsList'
+    $filtersPanel = Get-TestControl $layoutForm 'DataExplorerFiltersPanel'
+    $previewGrid = Get-TestControl $layoutForm 'PreviewGrid'
+    $tableList.SelectedIndex = 0
+    (Get-TestControl $layoutForm 'PreviewButton').PerformClick()
+    foreach ($number in 1..8) {
+        (Get-TestControl $layoutForm 'AddFilterButton').PerformClick()
+        $column = Get-TestControl $layoutForm ('FilterColumnCombo{0}' -f $number)
+        $column.SelectedIndex = $number - 1
+        $operator = Get-TestControl $layoutForm ('FilterOperatorCombo{0}' -f $number)
+        $operator.SelectedIndex = 2
+        (Get-TestControl $layoutForm ('FilterValueText{0}' -f $number)).Text = ('value-{0:D2}' -f $number)
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $tableList.TopIndex = 10
+    $outputList.TopIndex = 10
+    $filtersPanel.AutoScrollPosition = [System.Drawing.Point]::new(0, 40)
+    $previewGrid.FirstDisplayedScrollingRowIndex = 10
+    $previewGrid.HorizontalScrollingOffset = 40
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $builderBeforeResize = $layoutForm.Tag.DataExplorerBuilder
+    $previewBeforeResize = $layoutForm.Tag.DataExplorerPreview
+    $checkedNamesBeforeResize = @($outputList.CheckedItems | ForEach-Object Name)
+    $filterValuesBeforeResize = @(1..8 | ForEach-Object { (Get-TestControl $layoutForm ('FilterValueText{0}' -f $_)).Text })
+    $tableTopIndexBeforeResize = $tableList.TopIndex
+    $outputTopIndexBeforeResize = $outputList.TopIndex
+    $filterScrollBeforeResize = $filtersPanel.VerticalScroll.Value
+    $mainSplit = Get-TestControl $layoutForm 'DataExplorerMainSplit'
+    $rightSplit = Get-TestControl $layoutForm 'DataExplorerRightSplit'
+    $builderSplit = Get-TestControl $layoutForm 'DataExplorerBuilderSplit'
+    $splitterDistancesBeforeResize = @($mainSplit.SplitterDistance, $rightSplit.SplitterDistance, $builderSplit.SplitterDistance)
+
+    foreach ($size in @(
+        [System.Drawing.Size]::new(760, 520),
+        [System.Drawing.Size]::new(860, 600),
+        [System.Drawing.Size]::new(960, 680),
+        [System.Drawing.Size]::new(1280, 800),
+        [System.Drawing.Size]::new(760, 520)
+    )) {
+        $layoutForm.Size = $size
+        [System.Windows.Forms.Application]::DoEvents()
+        foreach ($name in @(
+            'PhysicalTablesList',
+            'OutputColumnsList',
+            'DataExplorerFiltersPanel',
+            'PreviewGrid'
+        )) {
+            Assert-TestControlContained (Get-TestControl $layoutForm $name) `
+                "$name remains contained at $($size.Width)x$($size.Height)"
+        }
+    }
+
+    $layoutForm.Size = [System.Drawing.Size]::new(960, 680)
+    [System.Windows.Forms.Application]::DoEvents()
+    foreach ($split in @($mainSplit, $rightSplit, $builderSplit)) {
+        $maximumDistance = if ($split.Orientation -eq [System.Windows.Forms.Orientation]::Vertical) {
+            $split.Width - $split.Panel2MinSize - $split.SplitterWidth
+        }
+        else {
+            $split.Height - $split.Panel2MinSize - $split.SplitterWidth
+        }
+        foreach ($distance in @($split.Panel1MinSize, $maximumDistance)) {
+            $split.SplitterDistance = [int] $distance
+            [System.Windows.Forms.Application]::DoEvents()
+            foreach ($name in @(
+                'PhysicalTablesList',
+                'OutputColumnsList',
+                'DataExplorerFiltersPanel',
+                'PreviewGrid'
+            )) {
+                Assert-TestControlContained (Get-TestControl $layoutForm $name) `
+                    "$name remains contained after moving $($split.Name)"
+            }
+        }
+    }
+    $mainSplit.SplitterDistance = $splitterDistancesBeforeResize[0]
+    $rightSplit.SplitterDistance = $splitterDistancesBeforeResize[1]
+    $builderSplit.SplitterDistance = $splitterDistancesBeforeResize[2]
+    [System.Windows.Forms.Application]::DoEvents()
+
+    Assert-True ([object]::ReferenceEquals($builderBeforeResize, $layoutForm.Tag.DataExplorerBuilder)) 'Resize preserves the builder object'
+    Assert-True ([object]::ReferenceEquals($previewBeforeResize, $layoutForm.Tag.DataExplorerPreview)) 'Resize preserves the preview object'
+    Assert-Equal ($checkedNamesBeforeResize -join ',') (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Resize preserves checked columns in order'
+    Assert-Equal ($filterValuesBeforeResize -join ',') (@(1..8 | ForEach-Object { (Get-TestControl $layoutForm ('FilterValueText{0}' -f $_)).Text }) -join ',') 'Resize preserves filter values in order'
+    Assert-True ($tableList.TopIndex -gt 0) 'Resize preserves a nonzero table-list scroll position'
+    Assert-True ($outputList.TopIndex -gt 0) 'Resize preserves a nonzero output-list scroll position'
+    Assert-True ($filtersPanel.VerticalScroll.Value -gt 0) 'Resize preserves a nonzero filter vertical scroll position'
+    Assert-True ($filterScrollBeforeResize -gt 0) 'Large filter fixture establishes vertical scrolling before resize'
+    Assert-Equal $false $filtersPanel.HorizontalScroll.Visible 'Filter rows do not require a horizontal scrollbar'
+    Assert-Equal $true $filtersPanel.VerticalScroll.Visible 'Filter rows retain a visible vertical scrollbar'
+    Assert-Equal ([System.Windows.Forms.ScrollBars]::Both) $previewGrid.ScrollBars 'Preview grid retains both scrollbars'
+    Assert-True ($previewGrid.FirstDisplayedScrollingRowIndex -gt 0) 'Resize preserves a nonzero preview vertical scroll position'
+    Assert-True ($previewGrid.HorizontalScrollingOffset -gt 0) 'Resize preserves a nonzero preview horizontal scroll position'
+}
+finally {
+    $layoutForm.Close()
+    $layoutForm.Dispose()
+}
+
 # Data Explorer loads its catalog on first activation and previews on demand.
 $explorerHarness = New-TestServices
 $explorerHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 2

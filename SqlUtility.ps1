@@ -556,18 +556,35 @@ function Update-SqlUtilityDataExplorerActionState {
 
 function Update-SqlUtilityDataExplorerSendState { param([System.Windows.Forms.Form]$Form) Update-SqlUtilityDataExplorerActionState $Form }
 
+function Resize-SqlUtilityDataExplorerFilterRows {
+    param([System.Windows.Forms.Form] $Form)
+    $panel = Get-SqlUtilityNamedControl $Form 'DataExplorerFiltersPanel'
+    if ($null -eq $panel -or $panel.ClientSize.Width -le 0) { return }
+    $rowWidth = [Math]::Max(1,
+        $panel.ClientSize.Width - [System.Windows.Forms.SystemInformation]::VerticalScrollBarWidth - 4)
+    foreach ($row in @($panel.Controls)) {
+        $row.Width = $rowWidth
+    }
+}
+
 function Add-SqlUtilityDataExplorerFilterRow {
     param([System.Windows.Forms.Form]$Form,$Filter)
     $s=$Form.Tag;$panel=Get-SqlUtilityNamedControl $Form 'DataExplorerFiltersPanel';if(!$panel-or!@($s.DataExplorerBuilder.Columns).Count){return}
     $s.DataExplorerFilterRowNumber=[int]$s.DataExplorerFilterRowNumber+1;$n=$s.DataExplorerFilterRowNumber
-    $row=[System.Windows.Forms.TableLayoutPanel]::new();$row.Name="DataExplorerFilterRow$n";$row.Height=31;$row.Width=565;$row.ColumnCount=5
-    $column=[System.Windows.Forms.ComboBox]::new();$column.Name="FilterColumnCombo$n";$column.DropDownStyle='DropDownList';$column.Width=130;$column.DisplayMember='DisplayText'
+    $row=[System.Windows.Forms.TableLayoutPanel]::new();$row.Name="DataExplorerFilterRow$n";$row.Height=31;$row.Margin=[System.Windows.Forms.Padding]::new(0);$row.ColumnCount=4
+    [void]$row.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent,30))
+    [void]$row.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent,25))
+    [void]$row.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::Percent,45))
+    [void]$row.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::AutoSize))
+    $column=[System.Windows.Forms.ComboBox]::new();$column.Name="FilterColumnCombo$n";$column.DropDownStyle='DropDownList';$column.Dock='Fill';$column.DisplayMember='DisplayText'
     foreach($item in @(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items){if(@(Get-SqlUtilityDataExplorerOperators -Column $item.Column).Count){[void]$column.Items.Add($item)}}
-    $operator=[System.Windows.Forms.ComboBox]::new();$operator.Name="FilterOperatorCombo$n";$operator.DropDownStyle='DropDownList';$operator.Width=130;$operator.DisplayMember='Label'
-    $text=[System.Windows.Forms.TextBox]::new();$text.Name="FilterValueText$n";$text.Width=150
-    $bit=[System.Windows.Forms.ComboBox]::new();$bit.Name="FilterValueBitCombo$n";$bit.DropDownStyle='DropDownList';$bit.Width=150;[void]$bit.Items.Add('True');[void]$bit.Items.Add('False');$bit.SelectedIndex=0;$bit.Visible=$false
+    $operator=[System.Windows.Forms.ComboBox]::new();$operator.Name="FilterOperatorCombo$n";$operator.DropDownStyle='DropDownList';$operator.Dock='Fill';$operator.DisplayMember='Label'
+    $valueHost=[System.Windows.Forms.Panel]::new();$valueHost.Dock='Fill'
+    $text=[System.Windows.Forms.TextBox]::new();$text.Name="FilterValueText$n";$text.Dock='Fill'
+    $bit=[System.Windows.Forms.ComboBox]::new();$bit.Name="FilterValueBitCombo$n";$bit.DropDownStyle='DropDownList';$bit.Dock='Fill';[void]$bit.Items.Add('True');[void]$bit.Items.Add('False');$bit.SelectedIndex=0;$bit.Visible=$false
     $remove=[System.Windows.Forms.Button]::new();$remove.Name="RemoveFilterButton$n";$remove.Text='Remove';$remove.AutoSize=$true
-    [void]$row.Controls.Add($column);[void]$row.Controls.Add($operator);[void]$row.Controls.Add($text);[void]$row.Controls.Add($bit);[void]$row.Controls.Add($remove)
+    [void]$valueHost.Controls.Add($text);[void]$valueHost.Controls.Add($bit)
+    [void]$row.Controls.Add($column,0,0);[void]$row.Controls.Add($operator,1,0);[void]$row.Controls.Add($valueHost,2,0);[void]$row.Controls.Add($remove,3,0)
     $row.Tag=[pscustomobject]@{RowNumber=$n;ColumnCombo=$column;OperatorCombo=$operator;ValueText=$text;ValueBitCombo=$bit;RemoveButton=$remove}
     $refreshValue={
         $selected=$operator.SelectedItem;$requires=($selected-and[bool]$selected.RequiresValue);$isBit=($column.SelectedItem-and$column.SelectedItem.Column.SqlTypeName-eq'bit')
@@ -576,7 +593,7 @@ function Add-SqlUtilityDataExplorerFilterRow {
     $column.Add_SelectedIndexChanged({$operator.Items.Clear();if($column.SelectedItem){foreach($op in @(Get-SqlUtilityDataExplorerOperators -Column $column.SelectedItem.Column)){[void]$operator.Items.Add($op)};if($operator.Items.Count){$operator.SelectedIndex=0}};&$refreshValue}.GetNewClosure())
     $operator.Add_SelectedIndexChanged({&$refreshValue}.GetNewClosure())
     $remove.Add_Click({$panel.Controls.Remove($row);$row.Dispose()}.GetNewClosure())
-    [void]$panel.Controls.Add($row);if($column.Items.Count){$column.SelectedIndex=0}
+    [void]$panel.Controls.Add($row);Resize-SqlUtilityDataExplorerFilterRows $Form;if($column.Items.Count){$column.SelectedIndex=0}
     if($Filter){for($i=0;$i-lt$column.Items.Count;$i++){if($column.Items[$i].Name-eq$Filter.ColumnName){$column.SelectedIndex=$i;break}};for($i=0;$i-lt$operator.Items.Count;$i++){if($operator.Items[$i].Key-eq$Filter.Operator){$operator.SelectedIndex=$i;break}};if($column.SelectedItem.Column.SqlTypeName-eq'bit'){$bit.SelectedItem=[string]$Filter.ValueText}else{$text.Text=[string]$Filter.ValueText}}
     return $row
 }
@@ -1264,6 +1281,15 @@ function New-SqlUtilityMainForm {
     $addFilter=[System.Windows.Forms.Button]::new();$addFilter.Name='AddFilterButton';$addFilter.Text='Add Filter';$addFilter.AutoSize=$true;[void]$dataExplorerFiltersLayout.Controls.Add($addFilter,0,0)
     $clearFilters=[System.Windows.Forms.Button]::new();$clearFilters.Name='ClearFiltersButton';$clearFilters.Text='Clear';$clearFilters.AutoSize=$true;[void]$dataExplorerFiltersLayout.Controls.Add($clearFilters,1,0)
     $filtersPanel=[System.Windows.Forms.FlowLayoutPanel]::new();$filtersPanel.Name='DataExplorerFiltersPanel';$filtersPanel.Dock=[System.Windows.Forms.DockStyle]::Fill;$filtersPanel.FlowDirection='TopDown';$filtersPanel.WrapContents=$false;$filtersPanel.AutoScroll=$true;$dataExplorerFiltersLayout.SetColumnSpan($filtersPanel,2);[void]$dataExplorerFiltersLayout.Controls.Add($filtersPanel,0,1)
+    $filterPanelLayoutState=[pscustomobject]@{VerticalScrollValue=0}
+    $filtersPanel.Add_Scroll({if($filtersPanel.VerticalScroll.Value -gt 0){$filterPanelLayoutState.VerticalScrollValue=$filtersPanel.VerticalScroll.Value}}.GetNewClosure())
+    $filtersPanel.Add_ClientSizeChanged({
+        if($filtersPanel.VerticalScroll.Value -gt 0){$filterPanelLayoutState.VerticalScrollValue=$filtersPanel.VerticalScroll.Value}
+        Resize-SqlUtilityDataExplorerFilterRows $form
+    }.GetNewClosure())
+    $filtersPanel.Add_Layout({
+        if($filterPanelLayoutState.VerticalScrollValue -gt 0-and$filtersPanel.VerticalScroll.Visible-and$filtersPanel.VerticalScroll.Value -ne $filterPanelLayoutState.VerticalScrollValue){$filtersPanel.AutoScrollPosition=[System.Drawing.Point]::new(0,$filterPanelLayoutState.VerticalScrollValue)}
+    }.GetNewClosure())
     $dataExplorerActionLayout=[System.Windows.Forms.TableLayoutPanel]::new();$dataExplorerActionLayout.Name='DataExplorerActionLayout';$dataExplorerActionLayout.Dock=[System.Windows.Forms.DockStyle]::Fill;$dataExplorerActionLayout.AutoSize=$true;$dataExplorerActionLayout.ColumnCount=3;$dataExplorerActionLayout.RowCount=1;[void]$dataExplorerActionLayout.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::AutoSize));[void]$dataExplorerActionLayout.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::AutoSize));[void]$dataExplorerActionLayout.ColumnStyles.Add([System.Windows.Forms.ColumnStyle]::new([System.Windows.Forms.SizeType]::AutoSize));[void]$dataExplorerBuilderLayout.Controls.Add($dataExplorerActionLayout,0,1)
     $preview=[System.Windows.Forms.Button]::new();$preview.Name='PreviewButton';$preview.Text='Preview';$preview.AutoSize=$true;$preview.Enabled=$false;[void]$dataExplorerActionLayout.Controls.Add($preview,0,0)
     $exportPreview=[System.Windows.Forms.Button]::new();$exportPreview.Name='ExportPreviewButton';$exportPreview.Text='Export Preview';$exportPreview.AutoSize=$true;$exportPreview.Enabled=$false;[void]$dataExplorerActionLayout.Controls.Add($exportPreview,1,0)

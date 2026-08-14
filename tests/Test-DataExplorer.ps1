@@ -22,7 +22,7 @@ $filters = @(
 $query = New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -SelectedColumnNames @('PlantID','ProductID') -Filters $filters -PreviewRowLimit 100
 Assert-Equal "SELECT TOP (@PreviewLimit) [PlantID], [ProductID] FROM [odd]]schema].[Order Table] WHERE [PlantID] = @Filter1 AND [ProductID] LIKE @Filter2 AND [OrderDate] >= @Filter3 AND [ProductID] IS NOT NULL;" $query.PreviewSql 'Preview SQL is parameterized with bracket-escaped identifiers and four predicates'
 Assert-True ($query.PreviewSql -notmatch "CN'01|A%_\[B|2026-01-01") 'Preview SQL does not contain literal filter values'
-Assert-Equal "SELECT [PlantID], [ProductID] FROM [odd]]schema].[Order Table] WHERE [PlantID] = N'CN''01' AND [ProductID] LIKE '%A[%][_][[]B%' AND [OrderDate] >= '2026-01-01T00:00:00.000' AND [ProductID] IS NOT NULL;" $query.EditorSql 'Editor SQL uses readable escaped invariant literals'
+Assert-Equal "SELECT [PlantID], [ProductID]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [PlantID] = N'CN''01'`r`n  AND [ProductID] LIKE '%A[%][_][[]B%'`r`n  AND [OrderDate] >= '2026-01-01T00:00:00.000'`r`n  AND [ProductID] IS NOT NULL;" $query.EditorSql 'Editor SQL uses readable multi-line escaped invariant literals'
 Assert-True ($query.EditorSql -notmatch '(?i)\bTOP\b|\bORDER\s+BY\b') 'Editor SQL has no preview or ordering clause'
 Assert-True ($query.PreviewSql -notmatch '(?i)\bORDER\s+BY\b|OFFSET|FETCH|COUNT\s*\(|501') 'Preview SQL has no paging count or sentinel construct'
 Assert-True (Test-SqlUtilityQuery -Sql $query.EditorSql).IsValid 'Editor SQL remains QueryPolicy-compatible'
@@ -93,12 +93,17 @@ $preciseColumns = @(
 )
 $preciseQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns $preciseColumns -SelectedColumnNames @('Precise','WholeSecond') -Filters @(
     [pscustomobject]@{ ColumnName='Precise'; Operator='Equals'; ValueText='2026-01-02T03:04:05.1234567' },
-    [pscustomobject]@{ ColumnName='WholeSecond'; Operator='Equals'; ValueText='2026-01-02T03:04:05.7654321' }
+    [pscustomobject]@{ ColumnName='WholeSecond'; Operator='Equals'; ValueText='2026-01-02T03:04:05' }
 ) -PreviewRowLimit 100
 Assert-True ($preciseQuery.EditorSql -match "\[Precise\] = '2026-01-02T03:04:05\.1234567'") 'Datetime2 scale 7 editor literal preserves all fractional digits'
 Assert-True ($preciseQuery.EditorSql -match "\[WholeSecond\] = '2026-01-02T03:04:05'") 'Datetime2 scale 0 editor literal omits fractional digits'
 Assert-Equal 7 $preciseQuery.PreviewParameters[1].Scale 'Datetime2 scale 7 parameter facet is preserved'
 Assert-Equal 0 $preciseQuery.PreviewParameters[2].Scale 'Datetime2 scale 0 parameter facet is preserved'
+Assert-Throws {
+    New-SqlUtilityDataExplorerQuery -Table $table -Columns @($columns[2]) -SelectedColumnNames @('OrderDate') -Filters @(
+        [pscustomobject]@{ ColumnName='OrderDate'; Operator='Equals'; ValueText='2026-01-02T03:04:05.1234' }
+    ) -PreviewRowLimit 100
+} 'System.ArgumentException' 'Datetime2 rejects fractional seconds beyond catalog scale'
 
 foreach ($invalidLimit in @('100', 10.5)) {
     Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -SelectedColumnNames @('PlantID') -Filters @() -PreviewRowLimit $invalidLimit } 'System.ArgumentException' "Non-integral CLR preview limit $invalidLimit is rejected"
@@ -110,7 +115,7 @@ $startsWithQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns $colum
 ) -PreviewRowLimit 100
 Assert-Equal "A][_][%][[]'; --%" $startsWithQuery.PreviewParameters[1].Value 'StartsWith escapes LIKE metacharacters while retaining a literal bracket and quote'
 Assert-True ($startsWithQuery.PreviewSql -notmatch "finished|A\]_") 'Preview SQL keeps repeated filter values parameterized'
-Assert-True ($startsWithQuery.EditorSql -match "LIKE 'A\]\[_\]\[%\]\[\[]''; --%' AND \[ProductID\] <> 'finished'") 'Editor SQL safely renders repeated string filters with quote and comment-like content'
+Assert-True ($startsWithQuery.EditorSql -match "LIKE 'A\]\[_\]\[%\]\[\[]''; --%'\r?\n\s+AND \[ProductID\] <> 'finished'") 'Editor SQL safely renders repeated string filters with quote and comment-like content'
 Assert-Equal 3 $startsWithQuery.PreviewParameters.Count 'Repeated value filters receive separate deterministic parameters'
 
 foreach ($invalid in @(
@@ -153,7 +158,7 @@ foreach ($case in @(
     $semanticColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$case.Type; MaxLength=$case.MaxLength; Precision=$case.Precision; Scale=$case.Scale; IsNullable=$true; IsUserDefined=$false }
     $semanticQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($semanticColumn) -SelectedColumnNames @('Value') -Filters @([pscustomobject]@{ ColumnName='Value'; Operator=$case.Operator; ValueText=$case.Value }) -PreviewRowLimit 100
     Assert-Equal "SELECT TOP (@PreviewLimit) [Value] FROM [odd]]schema].[Order Table] WHERE $($case.Preview);" $semanticQuery.PreviewSql "$($case.Name) preview predicate is exact"
-    Assert-Equal "SELECT [Value] FROM [odd]]schema].[Order Table] WHERE $($case.Editor);" $semanticQuery.EditorSql "$($case.Name) invariant editor literal is exact"
+    Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE $($case.Editor);" $semanticQuery.EditorSql "$($case.Name) invariant editor literal is exact"
     Assert-Equal $case.DbType $semanticQuery.PreviewParameters[1].SqlDbType "$($case.Name) parameter type is exact"
     Assert-Equal $case.Size $semanticQuery.PreviewParameters[1].Size "$($case.Name) parameter size is exact"
     Assert-Equal $case.Precision $semanticQuery.PreviewParameters[1].Precision "$($case.Name) parameter precision is exact"
@@ -170,5 +175,40 @@ foreach ($nullOperator in @('IsNull','IsNotNull')) {
 }
 $integerColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
 Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns @($integerColumn) -SelectedColumnNames @('Value') -Filters @([pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.2' }) -PreviewRowLimit 100 } 'System.ArgumentException' 'Integer column rejects lossy decimal text'
+
+$boundedDecimal = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='decimal'; MaxLength=5; Precision=5; Scale=2; IsNullable=$false; IsUserDefined=$false }
+$decimalBoundaryQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($boundedDecimal) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='999.99' }
+) -PreviewRowLimit 100
+Assert-Equal ([decimal] 999.99) $decimalBoundaryQuery.PreviewParameters[1].Value 'Decimal accepts the exact metadata precision boundary'
+$decimalTrailingZeroQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($boundedDecimal) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.230' }
+) -PreviewRowLimit 100
+Assert-Equal ([decimal] 1.23) $decimalTrailingZeroQuery.PreviewParameters[1].Value 'Decimal normalizes an exactly representable trailing zero'
+Assert-True ($decimalTrailingZeroQuery.EditorSql -match '\[Value\] = 1\.23(?:\r?\n|;)') 'Decimal editor SQL uses the normalized parameter value'
+Assert-Throws {
+    New-SqlUtilityDataExplorerQuery -Table $table -Columns @($boundedDecimal) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.234' }
+    ) -PreviewRowLimit 100
+} 'System.ArgumentException' 'Decimal rejects fractional digits beyond catalog scale'
+Assert-Throws {
+    New-SqlUtilityDataExplorerQuery -Table $table -Columns @($boundedDecimal) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1000.00' }
+    ) -PreviewRowLimit 100
+} 'System.ArgumentException' 'Decimal rejects values beyond catalog precision'
+
+$priorCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('en-GB')
+    $cultureDateColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='date'; MaxLength=3; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+    $cultureDateQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($cultureDateColumn) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='01/02/2026' }
+    ) -PreviewRowLimit 100
+    Assert-Equal ([datetime]::new(2026, 2, 1)) $cultureDateQuery.PreviewParameters[1].Value 'Ambiguous slash date follows the active en-GB culture'
+    Assert-True ($cultureDateQuery.EditorSql -match "\[Value\] = '2026-02-01'") 'Culture-parsed date renders the same invariant editor value'
+}
+finally {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $priorCulture
+}
 
 Complete-TestFile 'All Data Explorer tests passed.'

@@ -96,15 +96,91 @@ function ConvertTo-SqlUtilityDataExplorerTypedValue {
             { $_ -in @('decimal', 'numeric', 'smallmoney', 'money') } { return [decimal]::Parse($ValueText, [System.Globalization.NumberStyles]::Number, $culture) }
             'real' { $value = [single]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([single]::IsNaN($value) -or [single]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
             'float' { $value = [double]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
-            { $_ -in @('date', 'smalldatetime', 'datetime', 'datetime2') } { $value = [datetime]::MinValue; if (-not [datetime]::TryParse($ValueText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref] $value)) { $value = [datetime]::Parse($ValueText, $culture) }; return $value }
-            'time' { $value = [timespan]::Zero; if (-not [timespan]::TryParse($ValueText, [System.Globalization.CultureInfo]::InvariantCulture, [ref] $value)) { $value = [timespan]::Parse($ValueText, $culture) }; return $value }
-            'datetimeoffset' { $value = [datetimeoffset]::MinValue; if (-not [datetimeoffset]::TryParse($ValueText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref] $value)) { $value = [datetimeoffset]::Parse($ValueText, $culture) }; return $value }
+            { $_ -in @('date', 'smalldatetime', 'datetime', 'datetime2') } {
+                $value = [datetime]::MinValue
+                $isoFormats = [string[]] @(
+                    'yyyy-MM-dd',
+                    "yyyy-MM-dd'T'HH:mm:ss",
+                    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
+                    "yyyy-MM-dd'T'HH:mm:ssK",
+                    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"
+                )
+                if (-not [datetime]::TryParseExact($ValueText, $isoFormats, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref] $value)) {
+                    $value = [datetime]::Parse($ValueText, $culture)
+                }
+                return $value
+            }
+            'time' {
+                $value = [timespan]::Zero
+                if (-not [timespan]::TryParseExact($ValueText, 'c', [System.Globalization.CultureInfo]::InvariantCulture, [ref] $value)) {
+                    $value = [timespan]::Parse($ValueText, $culture)
+                }
+                return $value
+            }
+            'datetimeoffset' {
+                $value = [datetimeoffset]::MinValue
+                $isoFormats = [string[]] @(
+                    "yyyy-MM-dd'T'HH:mm:sszzz",
+                    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFzzz",
+                    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                    "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF'Z'"
+                )
+                if (-not [datetimeoffset]::TryParseExact($ValueText, $isoFormats, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref] $value)) {
+                    $value = [datetimeoffset]::Parse($ValueText, $culture)
+                }
+                return $value
+            }
             'bit' { return [System.Convert]::ToBoolean($ValueText, $culture) }
             'uniqueidentifier' { return [guid]::Parse($ValueText) }
             default { throw "Unsupported filter type: $type" }
         }
     }
     catch { throw [System.ArgumentException]::new("Invalid $type value.", $_.Exception) }
+}
+
+function ConvertTo-SqlUtilityDataExplorerMetadataValue {
+    param(
+        [Parameter(Mandatory = $true)][object] $Value,
+        [Parameter(Mandatory = $true)][object] $Column
+    )
+
+    $type = Get-SqlUtilityDataExplorerColumnType $Column
+    if ($type -in @('decimal', 'numeric')) {
+        $precision = [int] $Column.Precision
+        $scale = [int] $Column.Scale
+        if ($precision -lt 1 -or $precision -gt 38 -or $scale -lt 0 -or $scale -gt $precision) {
+            throw [System.ArgumentException]::new('Decimal column precision and scale metadata is invalid.')
+        }
+
+        $normalized = [decimal]::Round([decimal] $Value, $scale, [System.MidpointRounding]::ToEven)
+        if ($normalized -ne [decimal] $Value) {
+            throw [System.ArgumentException]::new("Invalid $type value: fractional digits exceed scale $scale.")
+        }
+
+        $integralDigits = $precision - $scale
+        if ($integralDigits -lt 29) {
+            $exclusiveLimit = [decimal] 1
+            for ($index = 0; $index -lt $integralDigits; $index++) {
+                $exclusiveLimit *= [decimal] 10
+            }
+            if ([Math]::Abs([decimal] $normalized) -ge $exclusiveLimit) {
+                throw [System.ArgumentException]::new("Invalid $type value: digits exceed precision $precision.")
+            }
+        }
+        return $normalized
+    }
+
+    if ($type -in @('time', 'datetime2', 'datetimeoffset')) {
+        $scale = [int] $Column.Scale
+        if ($scale -lt 0 -or $scale -gt 7) {
+            throw [System.ArgumentException]::new('Temporal column scale metadata is invalid.')
+        }
+        $tickQuantum = [long] [Math]::Pow(10, 7 - $scale)
+        if (([long] $Value.Ticks % $tickQuantum) -ne 0) {
+            throw [System.ArgumentException]::new("Invalid $type value: fractional seconds exceed scale $scale.")
+        }
+    }
+    return $Value
 }
 
 function Get-SqlUtilityDataExplorerDbType([string] $Type) {
@@ -169,6 +245,7 @@ function New-SqlUtilityDataExplorerQuery {
         $identifier = ConvertTo-SqlUtilityBracketIdentifier $column.Name
         if ($filter.Operator -eq 'IsNull' -or $filter.Operator -eq 'IsNotNull') { $word = if ($filter.Operator -eq 'IsNull') { 'IS NULL' } else { 'IS NOT NULL' }; $previewPredicates += "$identifier $word"; $editorPredicates += "$identifier $word"; continue }
         $filterIndex++; $name = "Filter$filterIndex"; $type = Get-SqlUtilityDataExplorerColumnType $column; $value = ConvertTo-SqlUtilityDataExplorerTypedValue -Column $column -ValueText ([string] $filter.ValueText)
+        $value = ConvertTo-SqlUtilityDataExplorerMetadataValue -Value $value -Column $column
         $sqlOperator = @{ Equals='='; NotEquals='<>'; GreaterThan='>'; GreaterThanOrEqual='>='; LessThan='<'; LessThanOrEqual='<=' }[$filter.Operator]
         if ($filter.Operator -in @('Contains','StartsWith')) { $value = ConvertTo-SqlUtilityLikePattern -Value ([string] $value) -Operator $filter.Operator; $sqlOperator = 'LIKE' }
         $size = 0; if ($type -in @('char','varchar','nchar','nvarchar')) { $size = [int] $column.MaxLength; if ($type -in @('nchar','nvarchar') -and $size -gt 0) { $size = [int] ($size / 2) } }
@@ -179,6 +256,13 @@ function New-SqlUtilityDataExplorerQuery {
     $source = "$(ConvertTo-SqlUtilityBracketIdentifier $Table.SchemaName).$(ConvertTo-SqlUtilityBracketIdentifier $Table.TableName)"
     $output = (@($selected | ForEach-Object { ConvertTo-SqlUtilityBracketIdentifier $_.Name }) -join ', ')
     $where = if ($previewPredicates.Count -gt 0) { ' WHERE ' + ($previewPredicates -join ' AND ') } else { '' }
-    $editorWhere = if ($editorPredicates.Count -gt 0) { ' WHERE ' + ($editorPredicates -join ' AND ') } else { '' }
-    return [pscustomobject][ordered]@{ PreviewSql="SELECT TOP (@PreviewLimit) $output FROM $source$where;"; PreviewParameters=$parameters; EditorSql="SELECT $output FROM $source$editorWhere;" }
+    $editorLines = @("SELECT $output", "FROM $source")
+    if ($editorPredicates.Count -gt 0) {
+        $editorLines += "WHERE $($editorPredicates[0])"
+        for ($index = 1; $index -lt $editorPredicates.Count; $index++) {
+            $editorLines += "  AND $($editorPredicates[$index])"
+        }
+    }
+    $editorSql = ($editorLines -join "`r`n") + ';'
+    return [pscustomobject][ordered]@{ PreviewSql="SELECT TOP (@PreviewLimit) $output FROM $source$where;"; PreviewParameters=$parameters; EditorSql=$editorSql }
 }

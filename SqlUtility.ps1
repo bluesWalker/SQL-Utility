@@ -1307,7 +1307,7 @@ function New-SqlUtilityMainForm {
     $settingsHelp = [System.Windows.Forms.Label]::new()
     $settingsHelp.Text = 'Query/Export timeout (seconds) covers interactive queries and complete Excel export; connection timeout remains fixed and separate.'
     $settingsHelp.AutoSize = $false
-    $settingsHelp.Location = [System.Drawing.Point]::new(22, 108)
+    $settingsHelp.Location = [System.Drawing.Point]::new(22, 142)
     $settingsHelp.Size = [System.Drawing.Size]::new(680, 42)
     $settingsHelp.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $settingsTab.Controls.Add($settingsHelp)
@@ -1316,7 +1316,7 @@ function New-SqlUtilityMainForm {
     $saveSettingsButton.Name = 'SaveSettingsButton'
     $saveSettingsButton.Text = 'Save Settings'
     $saveSettingsButton.AutoSize = $true
-    $saveSettingsButton.Location = [System.Drawing.Point]::new(22, 164)
+    $saveSettingsButton.Location = [System.Drawing.Point]::new(22, 198)
     $settingsTab.Controls.Add($saveSettingsButton)
 
     $savedConnectionsList.Add_SelectedIndexChanged({
@@ -1332,7 +1332,18 @@ function New-SqlUtilityMainForm {
     $workspaceTabs.Add_SelectedIndexChanged({if($workspaceTabs.SelectedTab-eq$dataExplorerTab-and-not$form.Tag.DataExplorerTablesLoaded){Invoke-SqlUtilityLoadDataExplorerTables $form}}.GetNewClosure())
     $tableFilter.Add_TextChanged({Update-SqlUtilityDataExplorerTableList $form}.GetNewClosure())
     $refresh.Add_Click({Invoke-SqlUtilityLoadDataExplorerTables $form}.GetNewClosure())
-    $tables.Add_SelectedIndexChanged({if($tables.SelectedItem){$form.Tag.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$tables.SelectedItem;Columns=@();SelectedColumnNames=@();Filters=@()};$outputs.Items.Clear();Clear-SqlUtilityDataExplorerFilterRows $form;$preview.Enabled=$true;Update-SqlUtilityDataExplorerSendState $form}}.GetNewClosure())
+    $tables.Add_SelectedIndexChanged({
+        if($tables.SelectedItem){
+            $currentTable=$form.Tag.DataExplorerBuilder.Table
+            if($null-eq$currentTable-or[int]$currentTable.ObjectId-ne[int]$tables.SelectedItem.ObjectId){
+                $form.Tag.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$tables.SelectedItem;Columns=@();SelectedColumnNames=@();Filters=@()}
+                $outputs.Items.Clear()
+                Clear-SqlUtilityDataExplorerFilterRows $form
+            }
+            $preview.Enabled=$true
+            Update-SqlUtilityDataExplorerSendState $form
+        }
+    }.GetNewClosure())
     $all.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$true)};Update-SqlUtilityDataExplorerSendState $form}.GetNewClosure())
     $none.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$false)};Update-SqlUtilityDataExplorerSendState $form}.GetNewClosure())
     $preview.Add_Click({Invoke-SqlUtilityDataExplorerPreview $form}.GetNewClosure())

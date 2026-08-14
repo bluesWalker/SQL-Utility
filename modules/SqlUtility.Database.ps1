@@ -337,7 +337,7 @@ SELECT t.object_id AS ObjectId,
        t.name AS TableName,
        c.name AS Name,
        c.column_id AS Ordinal,
-       base_type.name AS SqlTypeName,
+       COALESCE(base_type.name, declared_type.name) AS SqlTypeName,
        c.max_length AS MaxLength,
        c.precision AS [Precision],
        c.scale AS Scale,
@@ -349,7 +349,7 @@ FROM sys.tables AS t
 INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
 INNER JOIN sys.columns AS c ON c.object_id = t.object_id
 INNER JOIN sys.types AS declared_type ON declared_type.user_type_id = c.user_type_id
-INNER JOIN sys.types AS base_type
+LEFT JOIN sys.types AS base_type
     ON base_type.system_type_id = c.system_type_id
    AND base_type.user_type_id = base_type.system_type_id
 WHERE t.is_ms_shipped = 0

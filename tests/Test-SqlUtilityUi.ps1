@@ -666,8 +666,14 @@ try {
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
     Set-SqlUtilityStage -Form $settingsForm -Stage 'Workspace'
-    (Get-TestControl $settingsForm 'WorkspaceTabs').SelectedTab = Get-TestControl $settingsForm 'SettingsTab'
+    $settingsTab = Get-TestControl $settingsForm 'SettingsTab'
+    (Get-TestControl $settingsForm 'WorkspaceTabs').SelectedTab = $settingsTab
     [System.Windows.Forms.Application]::DoEvents()
+    $settingsHelpMatches = @($settingsTab.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -like '*covers interactive queries*' })
+    Assert-Equal 1 $settingsHelpMatches.Count 'Settings contains one timeout help label'
+    $settingsHelp = $settingsHelpMatches[0]
+    Assert-Equal $false $previewNumeric.Bounds.IntersectsWith($settingsHelp.Bounds) 'Preview limit control does not overlap Settings help'
+    Assert-True ($saveSettings.Top -ge $settingsHelp.Bottom) 'Save Settings is positioned below help text'
     $unorderedNumeric.Value = 1500
     $timeoutNumeric.Value = 300
     $settingsHarness.Recorder.WriteError = 'read-only directory'
@@ -1418,6 +1424,23 @@ try {
     $filterBuild = $explorerHarness.Recorder.BuildExplorerCalls[$explorerHarness.Recorder.BuildExplorerCalls.Count-1]
     Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($filterBuild.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Preview sends ordered neutral filters'
     Assert-Equal 'Id,CreatedAt,Payload' (@($filterBuild.SelectedNames) -join ',') 'Filtered unchecked column remains independent from output selection'
+
+    # Client-side filtering that keeps the selected table visible must not rebuild the same builder.
+    $filterPreservedSnapshot = $explorerForm.Tag.DataExplorerPreview
+    $filterPreservedGrid = (Get-TestControl $explorerForm 'PreviewGrid').DataSource
+    $columnCallsBeforeTableFilter = $explorerHarness.Recorder.ColumnCalls.Count
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
+    Assert-Equal 1 $explorerForm.Tag.DataExplorerBuilder.Table.ObjectId 'Matching table filter retains selected object id'
+    Assert-Equal 4 @($explorerForm.Tag.DataExplorerBuilder.Columns).Count 'Matching table filter preserves loaded metadata'
+    Assert-Equal 'Id,CreatedAt,Payload' (@((Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems | ForEach-Object Name) -join ',') 'Matching table filter preserves output choices'
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($explorerForm.Tag.DataExplorerBuilder.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Matching table filter preserves neutral filter state'
+    Assert-Equal 2 (Get-TestControl $explorerForm 'DataExplorerFiltersPanel').Controls.Count 'Matching table filter preserves filter rows'
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01' ("$((Get-TestControl $explorerForm 'FilterColumnCombo1').SelectedItem.Name):$((Get-TestControl $explorerForm 'FilterOperatorCombo1').SelectedItem.Key):$((Get-TestControl $explorerForm 'FilterValueText1').Text)") 'Matching table filter preserves the first filter choice'
+    Assert-Equal 'Name:Contains:north' ("$((Get-TestControl $explorerForm 'FilterColumnCombo2').SelectedItem.Name):$((Get-TestControl $explorerForm 'FilterOperatorCombo2').SelectedItem.Key):$((Get-TestControl $explorerForm 'FilterValueText2').Text)") 'Matching table filter preserves the second filter choice'
+    Assert-Equal $columnCallsBeforeTableFilter $explorerHarness.Recorder.ColumnCalls.Count 'Matching table filter performs no metadata query'
+    Assert-True ([object]::ReferenceEquals($filterPreservedSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Matching table filter preserves preview snapshot state'
+    Assert-True ([object]::ReferenceEquals($filterPreservedGrid,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Matching table filter preserves displayed preview data'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
 
     $priorPreviewCalls = $explorerHarness.Recorder.PreviewCalls.Count
     $priorMessages = $explorerHarness.Recorder.Messages.Count

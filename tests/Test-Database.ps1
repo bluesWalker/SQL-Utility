@@ -98,11 +98,18 @@ $columnExecutor = {
     $table = [System.Data.DataTable]::new()
     foreach ($column in @(@('ObjectId',[int]),@('SchemaName',[string]),@('TableName',[string]),@('Name',[string]),@('Ordinal',[int]),@('SqlTypeName',[string]),@('MaxLength',[int]),@('Precision',[byte]),@('Scale',[byte]),@('IsNullable',[bool]),@('IsUserDefined',[bool]))) { [void] $table.Columns.Add($column[0], $column[1]) }
     [void] $table.Rows.Add(42, 'dbo', 'Plants', 'PlantID', 1, 'nvarchar', 100, 0, 0, $false, $false)
+    [void] $table.Rows.Add(42, 'dbo', 'Plants', 'Shape', 2, 'geometry', -1, 0, 0, $true, $true)
     return (, $table)
 }
 $columns = Get-SqlUtilityTableColumns -Server 's' -Database 'd' -TableObjectId 42 -CommandTimeoutSeconds 120 -Executor $columnExecutor
 Assert-Equal 'PlantID' $columns[0].Name 'Column metadata retains name'
 Assert-Equal 'nvarchar' $columns[0].SqlTypeName 'Column metadata exposes base SQL type'
+Assert-True ($script:columnCall.CommandText -match '(?s)COALESCE\s*\(\s*base_type\.name\s*,\s*declared_type\.name\s*\)\s+AS\s+SqlTypeName') 'Column metadata falls back to the declared type name'
+Assert-True ($script:columnCall.CommandText -match '(?s)LEFT\s+JOIN\s+sys\.types\s+AS\s+base_type') 'Column metadata retains declarations without a canonical base-type row'
+Assert-True ($script:columnCall.CommandText -match 'declared_type\.is_assembly_type\s*=\s*1') 'Column metadata keeps assembly types marked as output-only'
+Assert-Equal 2 $columns.Count 'Column metadata retains ordinary and assembly-backed columns'
+Assert-Equal 'geometry' $columns[1].SqlTypeName 'Assembly-backed metadata exposes the declared type fallback'
+Assert-Equal $true $columns[1].IsUserDefined 'Assembly-backed metadata remains output-only'
 Assert-Equal 42 (Find-ParameterDescriptor $script:columnCall.ParameterDescriptors 'TableObjectId').Value 'Column metadata uses object-id parameter'
 
 $script:previewCall = $null

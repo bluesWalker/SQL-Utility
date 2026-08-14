@@ -12,6 +12,7 @@ Add-Type -AssemblyName System.Data
 
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.Config.ps1')
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.QueryPolicy.ps1')
+. (Join-Path $PSScriptRoot 'modules\SqlUtility.DataExplorer.ps1')
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.Database.ps1')
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.Excel.ps1')
 
@@ -132,6 +133,10 @@ function New-SqlUtilityDefaultServices {
                 $dialog.Dispose()
             }
         }
+        ListPhysicalTables = { param($Server,$Database,$TimeoutSeconds) Get-SqlUtilityPhysicalTables -Server $Server -Database $Database -CommandTimeoutSeconds $TimeoutSeconds }
+        GetTableColumns = { param($Server,$Database,$ObjectId,$TimeoutSeconds) Get-SqlUtilityTableColumns -Server $Server -Database $Database -TableObjectId $ObjectId -CommandTimeoutSeconds $TimeoutSeconds }
+        BuildDataExplorerQuery = { param($Table,$Columns,$SelectedNames,$Filters,$Limit) New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit }
+        ExecuteDataPreview = { param($Server,$Database,$Query,$Limit,$TimeoutSeconds) Invoke-SqlUtilityDataPreview -Server $Server -Database $Database -Query $Query -PreviewRowLimit $Limit -CommandTimeoutSeconds $TimeoutSeconds }
     }
 }
 
@@ -144,7 +149,8 @@ function Assert-SqlUtilityServices {
     foreach ($serviceName in @(
         'TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm', 'ValidateQuery',
         'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'BuildCountSql', 'ExecuteCount',
-        'ExportResult', 'PromptSavePath'
+        'ExportResult', 'PromptSavePath', 'ListPhysicalTables', 'GetTableColumns',
+        'BuildDataExplorerQuery', 'ExecuteDataPreview'
     )) {
         if (-not $Services.ContainsKey($serviceName) -or $Services[$serviceName] -isnot [scriptblock]) {
             throw [System.ArgumentException]::new("Services must contain a '$serviceName' scriptblock.")
@@ -380,9 +386,10 @@ function Invoke-SqlUtilitySaveSettings {
     try {
         $unorderedNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'UnorderedLimitNumeric'
         $timeoutNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'QueryExportTimeoutNumeric'
+        $previewNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'PreviewLimitNumeric'
         $candidate = ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
             schemaVersion = $state.Config.schemaVersion
-            previewRowLimit = $state.Config.previewRowLimit
+            previewRowLimit = [int] $previewNumeric.Value
             unorderedRowLimit = [int] $unorderedNumeric.Value
             queryExportTimeoutSeconds = [int] $timeoutNumeric.Value
             connections = @($state.Config.connections)
@@ -393,6 +400,7 @@ function Invoke-SqlUtilitySaveSettings {
         $state.Config = ConvertTo-SqlUtilityValidatedConfig -InputObject $persisted
         $unorderedNumeric.Value = $state.Config.unorderedRowLimit
         $timeoutNumeric.Value = $state.Config.queryExportTimeoutSeconds
+        $previewNumeric.Value = $state.Config.previewRowLimit
         Show-SqlUtilityMessage -State $state -Text 'Settings saved.' -Caption 'Settings' -Icon 'Information'
     }
     catch {
@@ -512,6 +520,28 @@ function Update-SqlUtilityQueryActionState {
     }
 }
 
+function Set-SqlUtilityGridData {
+    param($Grid,[System.Data.DataTable]$DataTable)
+    $Grid.DataSource=$null; $Grid.Columns.Clear(); $Grid.AutoGenerateColumns=$true; $Grid.DataSource=$DataTable
+    foreach($column in $Grid.Columns){$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells;$Grid.AutoResizeColumn($column.Index,[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells);$width=[Math]::Min(300,$column.Width);$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None;$column.Width=$width;$column.SortMode=[System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable}
+}
+
+function Update-SqlUtilityDataExplorerTableList {
+    param([System.Windows.Forms.Form]$Form)
+    $s=$Form.Tag;$list=Get-SqlUtilityNamedControl $Form 'PhysicalTablesList';$filter=(Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text;$id=if($s.DataExplorerBuilder.Table){[int]$s.DataExplorerBuilder.Table.ObjectId}else{-1}
+    $list.Items.Clear();foreach($t in @($s.DataExplorerTables)){if(!$filter-or$t.DisplayName.IndexOf($filter,[System.StringComparison]::OrdinalIgnoreCase)-ge 0){[void]$list.Items.Add($t)}};$list.DisplayMember='DisplayName';for($i=0;$i-lt$list.Items.Count;$i++){if([int]$list.Items[$i].ObjectId-eq$id){$list.SelectedIndex=$i;break}}
+}
+
+function Invoke-SqlUtilityLoadDataExplorerTables {
+    param([System.Windows.Forms.Form]$Form)
+    $s=$Form.Tag;if($s.IsBusy){return};Set-SqlUtilityBusy $Form $true 'Loading tables...';try{$fn=$s.Services.ListPhysicalTables;$tables=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.Config.queryExportTimeoutSeconds);$old=$s.DataExplorerBuilder.Table;$s.DataExplorerTables=$tables;$s.DataExplorerTablesLoaded=$true;if($old){$m=@($tables|?{[int]$_.ObjectId-eq[int]$old.ObjectId});$s.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$(if($m.Count){$m[0]}else{$null});Columns=@();SelectedColumnNames=@();Filters=@()}};(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items.Clear();(Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=($null-ne$s.DataExplorerBuilder.Table);Update-SqlUtilityDataExplorerTableList $Form}catch{Show-SqlUtilityMessage $s ("Tables could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.'}
+}
+
+function Invoke-SqlUtilityDataExplorerPreview {
+    param([System.Windows.Forms.Form]$Form)
+    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;$out.Items.Clear();foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)};$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$s.DataExplorerBuilder.SelectedColumnNames=$names;$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names @() $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$s.DataExplorerPreview=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityGridData (Get-SqlUtilityNamedControl $Form 'PreviewGrid') $data;(Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel').Text=$s.DataExplorerPreview.SourceTable;(Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel').Text="$($data.Rows.Count) rows displayed (unordered)"}catch{Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.'}
+}
+
 function Show-SqlUtilityPage {
     [CmdletBinding()]
     param(
@@ -523,20 +553,10 @@ function Show-SqlUtilityPage {
     $resultsGrid = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultsGrid'
     $pageStatus = Get-SqlUtilityNamedControl -Root $Form -Name 'PageStatusLabel'
 
-    $resultsGrid.DataSource = $null
-    $resultsGrid.Columns.Clear()
-    $resultsGrid.AutoGenerateColumns = $true
-    $resultsGrid.DataSource = $PageResult.Data
+    Set-SqlUtilityGridData $resultsGrid $PageResult.Data
     $pageStatus.Text = Get-SqlUtilityPageStatusText -State $state -PageResult $PageResult
     Update-SqlUtilityQueryActionState -Form $Form
 
-    foreach ($column in $resultsGrid.Columns) {
-        $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells
-        $resultsGrid.AutoResizeColumn($column.Index, [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells)
-        $width = [Math]::Min(300, $column.Width)
-        $column.AutoSizeMode = [System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None
-        $column.Width = $width
-    }
 }
 
 function Invoke-SqlUtilityQueryAction {
@@ -553,6 +573,10 @@ function Invoke-SqlUtilityQueryAction {
     $sqlEditor = Get-SqlUtilityNamedControl -Root $Form -Name 'SqlEditor'
     $editorSql = [string] $sqlEditor.Text
     Clear-SqlUtilityQueryResult -Form $Form
+    $state.DataExplorerTablesLoaded = $false
+    $state.DataExplorerTables = @()
+    $state.DataExplorerBuilder = [pscustomobject][ordered]@{ Table=$null; Columns=@(); SelectedColumnNames=@(); Filters=@() }
+    $state.DataExplorerPreview = $null
     Set-SqlUtilityBusy -Form $Form -Busy $true -Message 'Executing query...'
     try {
         $validateQuery = $state.Services['ValidateQuery']
@@ -830,6 +854,10 @@ function New-SqlUtilityMainForm {
         IsQueryStale = $false
         IsBusy = $false
         ExplicitTotalRowCount = $null
+        DataExplorerTablesLoaded = $false
+        DataExplorerTables = @()
+        DataExplorerBuilder = [pscustomobject][ordered]@{ Table=$null; Columns=@(); SelectedColumnNames=@(); Filters=@() }
+        DataExplorerPreview = $null
     }
     $form.Tag = $state
 
@@ -1124,6 +1152,18 @@ function New-SqlUtilityMainForm {
     $resultsGrid.EnableHeadersVisualStyles = $false
     $querySplit.Panel2.Controls.Add($resultsGrid)
 
+    $dataExplorerTab=[System.Windows.Forms.TabPage]::new();$dataExplorerTab.Name='DataExplorerTab';$dataExplorerTab.Text='Data Explorer';$dataExplorerTab.UseVisualStyleBackColor=$true;[void]$workspaceTabs.TabPages.Add($dataExplorerTab)
+    $tableFilter=[System.Windows.Forms.TextBox]::new();$tableFilter.Name='TableFilterTextBox';$tableFilter.Location='12,12';$tableFilter.Width=220;$dataExplorerTab.Controls.Add($tableFilter)
+    $refresh=[System.Windows.Forms.Button]::new();$refresh.Name='RefreshTablesButton';$refresh.Text='Refresh';$refresh.Location='240,10';$dataExplorerTab.Controls.Add($refresh)
+    $tables=[System.Windows.Forms.ListBox]::new();$tables.Name='PhysicalTablesList';$tables.Location='12,42';$tables.Size='300,500';$tables.Anchor='Top,Bottom,Left';$dataExplorerTab.Controls.Add($tables)
+    $outputs=[System.Windows.Forms.CheckedListBox]::new();$outputs.Name='OutputColumnsList';$outputs.CheckOnClick=$true;$outputs.Location='325,42';$outputs.Size='270,170';$outputs.Anchor='Top,Left,Right';$dataExplorerTab.Controls.Add($outputs)
+    $all=[System.Windows.Forms.Button]::new();$all.Name='SelectAllColumnsButton';$all.Text='All';$all.Location='325,220';$dataExplorerTab.Controls.Add($all)
+    $none=[System.Windows.Forms.Button]::new();$none.Name='SelectNoColumnsButton';$none.Text='None';$none.Location='405,220';$dataExplorerTab.Controls.Add($none)
+    $preview=[System.Windows.Forms.Button]::new();$preview.Name='PreviewButton';$preview.Text='Preview';$preview.Location='485,220';$preview.Enabled=$false;$dataExplorerTab.Controls.Add($preview)
+    $source=[System.Windows.Forms.Label]::new();$source.Name='PreviewSourceLabel';$source.Location='325,260';$source.Width=300;$dataExplorerTab.Controls.Add($source)
+    $previewStatus=[System.Windows.Forms.Label]::new();$previewStatus.Name='PreviewStatusLabel';$previewStatus.Location='625,260';$previewStatus.Width=250;$dataExplorerTab.Controls.Add($previewStatus)
+    $previewGrid=[System.Windows.Forms.DataGridView]::new();$previewGrid.Name='PreviewGrid';$previewGrid.Location='325,285';$previewGrid.Size='580,257';$previewGrid.Anchor='Top,Bottom,Left,Right';$previewGrid.ReadOnly=$true;$previewGrid.AllowUserToAddRows=$false;$previewGrid.AllowUserToDeleteRows=$false;$previewGrid.AllowUserToOrderColumns=$false;$previewGrid.SelectionMode='CellSelect';$dataExplorerTab.Controls.Add($previewGrid)
+
     $settingsTab = [System.Windows.Forms.TabPage]::new()
     $settingsTab.Name = 'SettingsTab'
     $settingsTab.Text = 'Settings'
@@ -1162,6 +1202,9 @@ function New-SqlUtilityMainForm {
     $queryExportTimeoutNumeric.Width = 110
     $settingsTab.Controls.Add($queryExportTimeoutNumeric)
 
+    $previewLimitLabel=[System.Windows.Forms.Label]::new();$previewLimitLabel.Text='Preview row limit';$previewLimitLabel.AutoSize=$true;$previewLimitLabel.Location='22,106';$settingsTab.Controls.Add($previewLimitLabel)
+    $previewLimitNumeric=[System.Windows.Forms.NumericUpDown]::new();$previewLimitNumeric.Name='PreviewLimitNumeric';$previewLimitNumeric.Minimum=10;$previewLimitNumeric.Maximum=500;$previewLimitNumeric.Value=$validatedConfig.previewRowLimit;$previewLimitNumeric.Location='260,102';$previewLimitNumeric.Width=110;$settingsTab.Controls.Add($previewLimitNumeric)
+
     $settingsHelp = [System.Windows.Forms.Label]::new()
     $settingsHelp.Text = 'Query/Export timeout (seconds) covers interactive queries and complete Excel export; connection timeout remains fixed and separate.'
     $settingsHelp.AutoSize = $false
@@ -1187,6 +1230,13 @@ function New-SqlUtilityMainForm {
     $connectButton.Add_Click({ Invoke-SqlUtilityConnectionAction -Form $form -EnterWorkspace $true }.GetNewClosure())
     $deleteConnectionButton.Add_Click({ Invoke-SqlUtilityDeleteConnection -Form $form }.GetNewClosure())
     $saveSettingsButton.Add_Click({ Invoke-SqlUtilitySaveSettings -Form $form }.GetNewClosure())
+    $workspaceTabs.Add_SelectedIndexChanged({if($workspaceTabs.SelectedTab-eq$dataExplorerTab-and-not$form.Tag.DataExplorerTablesLoaded){Invoke-SqlUtilityLoadDataExplorerTables $form}}.GetNewClosure())
+    $tableFilter.Add_TextChanged({Update-SqlUtilityDataExplorerTableList $form}.GetNewClosure())
+    $refresh.Add_Click({Invoke-SqlUtilityLoadDataExplorerTables $form}.GetNewClosure())
+    $tables.Add_SelectedIndexChanged({if($tables.SelectedItem){$form.Tag.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$tables.SelectedItem;Columns=@();SelectedColumnNames=@();Filters=@()};$outputs.Items.Clear();$preview.Enabled=$true}}.GetNewClosure())
+    $all.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$true)}}.GetNewClosure())
+    $none.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$false)}}.GetNewClosure())
+    $preview.Add_Click({Invoke-SqlUtilityDataExplorerPreview $form}.GetNewClosure())
     $changeConnectionButton.Add_Click({ Invoke-SqlUtilityChangeConnection -Form $form }.GetNewClosure())
     $executeButton.Add_Click({ Invoke-SqlUtilityQueryAction -Form $form }.GetNewClosure())
     $previousPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta -1 }.GetNewClosure())

@@ -25,6 +25,25 @@ function New-TestServices {
         CountCalls = [System.Collections.Generic.List[object]]::new()
         ExportCalls = [System.Collections.Generic.List[object]]::new()
         PromptCalls = 0
+        TableCalls = [System.Collections.Generic.List[object]]::new()
+        ColumnCalls = [System.Collections.Generic.List[object]]::new()
+        BuildExplorerCalls = [System.Collections.Generic.List[object]]::new()
+        PreviewCalls = [System.Collections.Generic.List[object]]::new()
+        TablesResult = @(
+            [pscustomobject]@{ ObjectId=1; SchemaName='dbo'; TableName='Orders'; DisplayName='[dbo].[Orders]' },
+            [pscustomobject]@{ ObjectId=2; SchemaName='sales'; TableName='OrderHistory'; DisplayName='[sales].[OrderHistory]' },
+            [pscustomobject]@{ ObjectId=3; SchemaName='dbo'; TableName='Percent%_Star*'; DisplayName='[dbo].[Percent%_Star*]' }
+        )
+        ColumnsResult = @(
+            [pscustomobject]@{ Name='Id'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false },
+            [pscustomobject]@{ Name='Name'; Ordinal=2; SqlTypeName='nvarchar'; MaxLength=80; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false },
+            [pscustomobject]@{ Name='CreatedAt'; Ordinal=3; SqlTypeName='datetime2'; MaxLength=8; Precision=0; Scale=3; IsNullable=$false; IsUserDefined=$false },
+            [pscustomobject]@{ Name='Payload'; Ordinal=4; SqlTypeName='varbinary'; MaxLength=-1; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+        )
+        PreviewResult = $null
+        TableError = $null
+        ColumnError = $null
+        PreviewError = $null
         DialogCalls = 0
         TestError = $null
         WriteError = $null
@@ -176,6 +195,29 @@ function New-TestServices {
             }
             return $recorder.PromptPath
         }.GetNewClosure()
+        ListPhysicalTables = {
+            param($Server,$Database,$TimeoutSeconds)
+            [void] $recorder.TableCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.TableError) { throw $recorder.TableError }
+            return $recorder.TablesResult
+        }.GetNewClosure()
+        GetTableColumns = {
+            param($Server,$Database,$ObjectId,$TimeoutSeconds)
+            [void] $recorder.ColumnCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;ObjectId=$ObjectId;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.ColumnError) { throw $recorder.ColumnError }
+            return $recorder.ColumnsResult
+        }.GetNewClosure()
+        BuildDataExplorerQuery = {
+            param($Table,$Columns,$SelectedNames,$Filters,$Limit)
+            [void] $recorder.BuildExplorerCalls.Add([pscustomobject]@{Table=$Table;Columns=$Columns;SelectedNames=$SelectedNames;Filters=$Filters;Limit=$Limit})
+            return New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit
+        }.GetNewClosure()
+        ExecuteDataPreview = {
+            param($Server,$Database,$Query,$Limit,$TimeoutSeconds)
+            [void] $recorder.PreviewCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;Query=$Query;Limit=$Limit;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.PreviewError) { throw $recorder.PreviewError }
+            return (, $recorder.PreviewResult)
+        }.GetNewClosure()
         ShowDialog = {
             param($Form)
             $recorder.DialogCalls++
@@ -270,7 +312,10 @@ $requiredControlNames = @(
     'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
     'SqlEditor', 'ExecuteButton', 'ExportButton', 'CountButton', 'PreviousPageButton',
     'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
-    'QuerySplitContainer', 'ResultsGrid'
+    'QuerySplitContainer', 'ResultsGrid', 'DataExplorerTab', 'TableFilterTextBox',
+    'RefreshTablesButton', 'PhysicalTablesList', 'OutputColumnsList', 'SelectAllColumnsButton',
+    'SelectNoColumnsButton', 'PreviewButton', 'PreviewSourceLabel', 'PreviewStatusLabel',
+    'PreviewGrid', 'PreviewLimitNumeric'
 )
 
 # Page status text uses exact totals only when the state makes them known.
@@ -603,6 +648,7 @@ $settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\
 try {
     Show-TestForm $settingsForm
     $settingsForm.Tag.Config.previewRowLimit = 250
+    (Get-TestControl $settingsForm 'PreviewLimitNumeric').Value = 250
     $unorderedNumeric = Get-TestControl $settingsForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
@@ -1279,5 +1325,43 @@ finally {
         Remove-Item -LiteralPath $startupRoot -Recurse -Force
     }
 }
+
+# Data Explorer loads its catalog on first activation and previews on demand.
+$explorerHarness = New-TestServices
+$explorerHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 2
+$explorerForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $explorerHarness.Services
+try {
+    Show-TestForm $explorerForm
+    Assert-Equal 0 $explorerHarness.Recorder.TableCalls.Count 'Form construction does not load catalog'
+    Enter-TestWorkspace $explorerForm
+    (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal 1 $explorerHarness.Recorder.TableCalls.Count 'First activation loads catalog once'
+    Assert-Equal 3 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Catalog binds physical tables'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
+    Assert-Equal 2 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter is case-insensitive substring'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = '%_Star*'
+    Assert-Equal 1 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter treats wildcard characters literally'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
+    (Get-TestControl $explorerForm 'PhysicalTablesList').SelectedIndex = 0
+    Assert-Equal 0 $explorerHarness.Recorder.ColumnCalls.Count 'Selecting table does not load metadata'
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'First Preview loads metadata once'
+    Assert-Equal 1 $explorerHarness.Recorder.BuildExplorerCalls.Count 'First Preview builds one query'
+    Assert-Equal 1 $explorerHarness.Recorder.PreviewCalls.Count 'First Preview executes one bounded query'
+    Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
+    Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'First Preview binds returned DataTable'
+    Assert-Equal '2 rows displayed (unordered)' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Preview reports exact unordered rows'
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'Later Preview reuses metadata'
+    (Get-TestControl $explorerForm 'SelectNoColumnsButton').PerformClick()
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 2 $explorerHarness.Recorder.PreviewCalls.Count 'No columns prevents preview execution'
+    Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Selection changes preserve snapshot'
+    $previewLimit = Get-TestControl $explorerForm 'PreviewLimitNumeric'
+    Assert-Equal 10 ([int] $previewLimit.Minimum) 'Preview limit minimum is 10'
+    Assert-Equal 500 ([int] $previewLimit.Maximum) 'Preview limit maximum is 500'
+}
+finally { $explorerForm.Dispose() }
 
 Complete-TestFile 'All SQL Utility UI tests passed.'

@@ -31,6 +31,7 @@ $runtimeFiles = @(
     'SqlUtility.ps1',
     'modules\SqlUtility.Config.ps1',
     'modules\SqlUtility.QueryPolicy.ps1',
+    'modules\SqlUtility.DataExplorer.ps1',
     'modules\SqlUtility.Database.ps1',
     'modules\SqlUtility.Excel.ps1'
 )
@@ -142,6 +143,11 @@ exit 37
         ExecuteCount = { throw 'Unexpected ExecuteCount call during form construction.' }
         ExportResult = { throw 'Unexpected ExportResult call during form construction.' }
         PromptSavePath = { throw 'Unexpected PromptSavePath call during form construction.' }
+        ListPhysicalTables = { throw 'Unexpected ListPhysicalTables call during form construction.' }
+        GetTableColumns = { throw 'Unexpected GetTableColumns call during form construction.' }
+        BuildDataExplorerQuery = { throw 'Unexpected BuildDataExplorerQuery call during form construction.' }
+        ExecuteDataPreview = { throw 'Unexpected ExecuteDataPreview call during form construction.' }
+        ExportPreview = { throw 'Unexpected ExportPreview call during form construction.' }
     }
     $form = New-SqlUtilityMainForm -Config (New-SqlUtilityDefaultConfig) `
         -ConfigPath (Join-Path $projectRoot 'SqlUtility.config.json') -Services $services

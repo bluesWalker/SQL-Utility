@@ -9,10 +9,44 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('SqlUtilityConfigTests-
 
 try {
     $defaults = New-SqlUtilityDefaultConfig
-    Assert-Equal 1 $defaults.schemaVersion 'Default schema version'
+    Assert-Equal 2 $defaults.schemaVersion 'Default schema version'
+    Assert-Equal 100 $defaults.previewRowLimit 'Default preview limit'
     Assert-Equal 1000 $defaults.unorderedRowLimit 'Default unordered limit'
     Assert-Equal 120 $defaults.queryExportTimeoutSeconds 'Default timeout'
     Assert-Equal 0 @($defaults.connections).Count 'Default saved connections'
+
+    $version1 = [pscustomobject][ordered]@{
+        schemaVersion = 1
+        previewRowLimit = 500
+        unorderedRowLimit = 1200
+        queryExportTimeoutSeconds = 90
+        connections = @([pscustomobject]@{ server = 'ServerA'; database = 'DbA' })
+    }
+    $migrated = ConvertTo-SqlUtilityValidatedConfig -InputObject $version1
+    Assert-Equal 2 $migrated.schemaVersion 'Version 1 migrates in memory'
+    Assert-Equal 100 $migrated.previewRowLimit 'Version 1 receives default preview limit'
+    Assert-Equal 1200 $migrated.unorderedRowLimit 'Migration preserves unordered limit'
+    Assert-Equal 100 (ConvertTo-SqlUtilityValidatedConfig -InputObject $version1).previewRowLimit 'Version 1 ignores extra preview limit'
+    $version1Path = Join-Path $testRoot 'version1.json'
+    $version1Json = '{"schemaVersion":1,"unorderedRowLimit":1200,"queryExportTimeoutSeconds":90,"connections":[{"server":"ServerA","database":"DbA"}]}'
+    [System.IO.File]::WriteAllText($version1Path, $version1Json, [System.Text.UTF8Encoding]::new($false))
+    $version1Bytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($version1Path))
+    $readVersion1 = Read-SqlUtilityConfig -Path $version1Path
+    Assert-Equal 2 $readVersion1.schemaVersion 'Read migrates version 1 in memory'
+    Assert-Equal $version1Bytes ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($version1Path))) 'Version 1 read does not rewrite bytes'
+
+    foreach ($validPreviewLimit in @(10, 100, 500)) {
+        $candidate = New-SqlUtilityDefaultConfig
+        $candidate.previewRowLimit = $validPreviewLimit
+        Assert-Equal $validPreviewLimit (ConvertTo-SqlUtilityValidatedConfig -InputObject $candidate).previewRowLimit `
+            "Accept preview limit $validPreviewLimit"
+    }
+    foreach ($invalidPreviewLimit in @(9, 501, 10.5, '100')) {
+        $candidate = New-SqlUtilityDefaultConfig
+        $candidate.previewRowLimit = $invalidPreviewLimit
+        Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $candidate } `
+            'System.ArgumentException' "Reject preview limit $invalidPreviewLimit"
+    }
 
     $missingPath = Join-Path $testRoot 'missing.json'
     $missing = Read-SqlUtilityConfig -Path $missingPath
@@ -41,6 +75,7 @@ try {
     $reloadedReplacement = Read-SqlUtilityConfig -Path $roundTripPath
     Assert-Equal 1500 $replaced.unorderedRowLimit 'Existing config replacement returns updated settings'
     Assert-Equal 1500 $reloadedReplacement.unorderedRowLimit 'Existing config replacement persists updated settings'
+    Assert-Equal 100 $reloadedReplacement.previewRowLimit 'Write round-trip emits schema 2 preview limit'
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.tmp' -File).Count 'Successful replacement leaves no temporary sibling'
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File).Count 'Successful replacement leaves no backup sibling'
 
@@ -79,6 +114,8 @@ try {
         }
         Assert-Equal 1600 (Read-SqlUtilityConfig -Path $roundTripPath).unorderedRowLimit `
             'Backup cleanup failure leaves the new configuration committed'
+        Assert-Equal 100 (Read-SqlUtilityConfig -Path $roundTripPath).previewRowLimit `
+            'Backup cleanup failure retains preview limit'
         Assert-Equal 1 @($cleanupWarnings).Count 'Backup cleanup failure is reported separately as one warning'
         Assert-True (@($cleanupWarnings)[0].Message -match 'saved') `
             'Backup cleanup warning identifies the save as committed'
@@ -168,9 +205,20 @@ try {
     }
     Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingTimeoutConfig } 'System.ArgumentException' 'Reject config missing queryExportTimeoutSeconds'
 
+    $missingPreviewConfig = New-SqlUtilityDefaultConfig
+    $missingPreviewConfig.PSObject.Properties.Remove('previewRowLimit')
+    Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingPreviewConfig } 'System.ArgumentException' 'Schema 2 missing preview limit is corruption'
+
     $futureSchemaConfig = New-SqlUtilityDefaultConfig
-    $futureSchemaConfig.schemaVersion = 2
+    $futureSchemaConfig.schemaVersion = 3
     Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $futureSchemaConfig } 'System.NotSupportedException' 'Reject unsupported schema version'
+
+    $previewConfig = New-SqlUtilityDefaultConfig
+    $previewConfig.previewRowLimit = 250
+    $previewWithPair = Add-SqlUtilitySavedConnection -Config $previewConfig -Server 'ServerA' -Database 'DbA'
+    Assert-Equal 250 $previewWithPair.previewRowLimit 'Add preserves preview limit'
+    $previewRemoved = Remove-SqlUtilitySavedConnection -Config $previewWithPair -Server 'ServerA' -Database 'DbA'
+    Assert-Equal 250 $previewRemoved.previewRowLimit 'Remove preserves preview limit'
 
     $malformedPath = Join-Path $testRoot 'malformed.json'
     [System.IO.File]::WriteAllText($malformedPath, '{ malformed json')

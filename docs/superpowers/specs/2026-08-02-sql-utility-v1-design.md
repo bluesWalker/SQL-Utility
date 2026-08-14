@@ -1,5 +1,7 @@
 # SQL Utility Version 1 Design
 
+> **Historical baseline and current extension:** This document records the original six-file, schema-1 Query/Settings baseline and intentionally preserves its original scope and deferred-feature labels. The approved [SQL Utility Data Explorer Design](2026-08-14-sql-utility-data-explorer-design.md) extends the current implementation to seven runtime files, configuration schema 2, and a Data Explorer tab. For current user behavior and distribution details, see the repository [README](../../../README.md).
+
 ## Purpose
 
 Evolve the proven SQL connection POC into a portable internal Windows GUI for managing Windows-authenticated SQL Server connections, running restricted read-only queries, paging results, and exporting complete results to formatted Excel workbooks.

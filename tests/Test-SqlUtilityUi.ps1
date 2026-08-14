@@ -11,6 +11,15 @@ function Get-TestControl($Root, [string] $Name) {
     return $matches[0]
 }
 
+function Assert-TestControlContained($Control, [string] $Message) {
+    $parent = $Control.Parent
+    $contained = $null -ne $parent -and
+        $Control.Left -ge 0 -and $Control.Top -ge 0 -and
+        $Control.Right -le $parent.ClientSize.Width -and
+        $Control.Bottom -le $parent.ClientSize.Height
+    Assert-True $contained $Message
+}
+
 function New-TestServices {
     $recorder = [pscustomobject]@{
         TestCalls = [System.Collections.Generic.List[object]]::new()
@@ -25,6 +34,28 @@ function New-TestServices {
         CountCalls = [System.Collections.Generic.List[object]]::new()
         ExportCalls = [System.Collections.Generic.List[object]]::new()
         PromptCalls = 0
+        TableCalls = [System.Collections.Generic.List[object]]::new()
+        ColumnCalls = [System.Collections.Generic.List[object]]::new()
+        BuildExplorerCalls = [System.Collections.Generic.List[object]]::new()
+        PreviewCalls = [System.Collections.Generic.List[object]]::new()
+        ExportPreviewCalls = [System.Collections.Generic.List[object]]::new()
+        TablesResult = @(
+            [pscustomobject]@{ ObjectId=1; SchemaName='dbo'; TableName='Orders'; DisplayName='[dbo].[Orders]' },
+            [pscustomobject]@{ ObjectId=2; SchemaName='sales'; TableName='OrderHistory'; DisplayName='[sales].[OrderHistory]' },
+            [pscustomobject]@{ ObjectId=3; SchemaName='dbo'; TableName='Percent%_Star*'; DisplayName='[dbo].[Percent%_Star*]' }
+        )
+        ColumnsResult = @(
+            [pscustomobject]@{ Name='Id'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false },
+            [pscustomobject]@{ Name='Name'; Ordinal=2; SqlTypeName='nvarchar'; MaxLength=80; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false },
+            [pscustomobject]@{ Name='CreatedAt'; Ordinal=3; SqlTypeName='datetime2'; MaxLength=8; Precision=0; Scale=3; IsNullable=$false; IsUserDefined=$false },
+            [pscustomobject]@{ Name='Payload'; Ordinal=4; SqlTypeName='varbinary'; MaxLength=-1; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+        )
+        PreviewResult = $null
+        TableError = $null
+        ColumnError = $null
+        PreviewError = $null
+        ExportPreviewError = $null
+        BuildExplorerError = $null
         DialogCalls = 0
         TestError = $null
         WriteError = $null
@@ -176,6 +207,35 @@ function New-TestServices {
             }
             return $recorder.PromptPath
         }.GetNewClosure()
+        ListPhysicalTables = {
+            param($Server,$Database,$TimeoutSeconds)
+            [void] $recorder.TableCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.TableError) { throw $recorder.TableError }
+            return $recorder.TablesResult
+        }.GetNewClosure()
+        GetTableColumns = {
+            param($Server,$Database,$ObjectId,$TimeoutSeconds)
+            [void] $recorder.ColumnCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;ObjectId=$ObjectId;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.ColumnError) { throw $recorder.ColumnError }
+            return $recorder.ColumnsResult
+        }.GetNewClosure()
+        BuildDataExplorerQuery = {
+            param($Table,$Columns,$SelectedNames,$Filters,$Limit)
+            [void] $recorder.BuildExplorerCalls.Add([pscustomobject]@{Table=$Table;Columns=$Columns;SelectedNames=$SelectedNames;Filters=$Filters;Limit=$Limit})
+            if ($recorder.BuildExplorerError) { throw $recorder.BuildExplorerError }
+            return New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit
+        }.GetNewClosure()
+        ExecuteDataPreview = {
+            param($Server,$Database,$Query,$Limit,$TimeoutSeconds)
+            [void] $recorder.PreviewCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;Query=$Query;Limit=$Limit;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.PreviewError) { throw $recorder.PreviewError }
+            return (, $recorder.PreviewResult)
+        }.GetNewClosure()
+        ExportPreview = {
+            param($DataTable,$DestinationPath,$TimeoutSeconds)
+            [void] $recorder.ExportPreviewCalls.Add([pscustomobject]@{DataTable=$DataTable;DestinationPath=$DestinationPath;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.ExportPreviewError) { throw $recorder.ExportPreviewError }
+        }.GetNewClosure()
         ShowDialog = {
             param($Form)
             $recorder.DialogCalls++
@@ -270,7 +330,13 @@ $requiredControlNames = @(
     'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
     'SqlEditor', 'ExecuteButton', 'ExportButton', 'CountButton', 'PreviousPageButton',
     'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
-    'QuerySplitContainer', 'ResultsGrid'
+    'QuerySplitContainer', 'ResultsGrid', 'DataExplorerTab', 'TableFilterTextBox',
+    'RefreshTablesButton', 'PhysicalTablesList', 'OutputColumnsList', 'SelectAllColumnsButton',
+    'SelectNoColumnsButton', 'PreviewButton', 'ExportPreviewButton', 'PreviewSourceLabel', 'PreviewStatusLabel',
+    'PreviewGrid', 'PreviewLimitNumeric', 'DataExplorerMainSplit', 'DataExplorerTableLayout',
+    'DataExplorerRightSplit', 'DataExplorerBuilderLayout', 'DataExplorerBuilderSplit',
+    'DataExplorerColumnsLayout', 'DataExplorerFiltersLayout', 'DataExplorerActionLayout',
+    'DataExplorerPreviewLayout'
 )
 
 # Page status text uses exact totals only when the state makes them known.
@@ -599,27 +665,64 @@ finally {
 
 # Settings enter application state only after a successful write.
 $settingsHarness = New-TestServices
-$settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $settingsHarness.Services
+$settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig -WithConnections) -ConfigPath 'C:\test\config.json' -Services $settingsHarness.Services
 try {
     Show-TestForm $settingsForm
+    $settingsForm.Tag.Config.previewRowLimit = 250
+    $previewNumeric = Get-TestControl $settingsForm 'PreviewLimitNumeric'
+    $previewNumeric.Value = 275
+    $settingsPreviewData = New-TestDataTable -RowCount 2
+    $settingsPreview = [pscustomobject][ordered]@{ SourceTable='[dbo].[SettingsSnapshot]'; Data=$settingsPreviewData }
+    Set-SqlUtilityDataExplorerPreviewDisplay -Form $settingsForm -Candidate $settingsPreview
     $unorderedNumeric = Get-TestControl $settingsForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
     Set-SqlUtilityStage -Form $settingsForm -Stage 'Workspace'
-    (Get-TestControl $settingsForm 'WorkspaceTabs').SelectedTab = Get-TestControl $settingsForm 'SettingsTab'
+    $settingsTab = Get-TestControl $settingsForm 'SettingsTab'
+    (Get-TestControl $settingsForm 'WorkspaceTabs').SelectedTab = $settingsTab
     [System.Windows.Forms.Application]::DoEvents()
+    $settingsHelpMatches = @($settingsTab.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -like '*covers interactive queries*' })
+    Assert-Equal 1 $settingsHelpMatches.Count 'Settings contains one timeout help label'
+    $settingsHelp = $settingsHelpMatches[0]
+    Assert-Equal $false $previewNumeric.Bounds.IntersectsWith($settingsHelp.Bounds) 'Preview limit control does not overlap Settings help'
+    Assert-True ($saveSettings.Top -ge $settingsHelp.Bottom) 'Save Settings is positioned below help text'
     $unorderedNumeric.Value = 1500
     $timeoutNumeric.Value = 300
     $settingsHarness.Recorder.WriteError = 'read-only directory'
     $saveSettings.PerformClick()
+    $failedCandidate = $settingsHarness.Recorder.WriteCalls[0].Config
+    Assert-Equal 2 $failedCandidate.schemaVersion 'Settings candidate writes schema version 2'
+    Assert-Equal 275 $failedCandidate.previewRowLimit 'Settings candidate writes visible preview limit'
+    Assert-Equal 1500 $failedCandidate.unorderedRowLimit 'Settings candidate writes unordered limit'
+    Assert-Equal 300 $failedCandidate.queryExportTimeoutSeconds 'Settings candidate writes timeout'
+    Assert-Equal 2 @($failedCandidate.connections).Count 'Settings candidate preserves connections'
+    Assert-Equal 'SavedServer' $failedCandidate.connections[0].server 'Settings candidate preserves first connection'
+    Assert-Equal 'SecondDatabase' $failedCandidate.connections[1].database 'Settings candidate preserves second connection'
     Assert-Equal 1000 $settingsForm.Tag.Config.unorderedRowLimit 'Failed settings write keeps active row limit'
     Assert-Equal 120 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Failed settings write keeps active timeout'
+    Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Failed settings write keeps active preview limit'
+    Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Failed settings write preserves displayed preview snapshot'
+    Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Failed settings write preserves displayed preview grid'
     Assert-Equal $false $settingsForm.Tag.IsBusy 'Settings exception restores busy state'
 
     $settingsHarness.Recorder.WriteError = $null
     $saveSettings.PerformClick()
     Assert-Equal 1500 $settingsForm.Tag.Config.unorderedRowLimit 'Successful settings write enters row limit state'
     Assert-Equal 300 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Successful settings write enters timeout state'
+    $successfulCandidate = $settingsHarness.Recorder.WriteCalls[1].Config
+    Assert-Equal 2 $successfulCandidate.schemaVersion 'Successful Settings candidate keeps schema version 2'
+    Assert-Equal 275 $successfulCandidate.previewRowLimit 'Successful Settings candidate keeps preview limit'
+    Assert-Equal 1500 $successfulCandidate.unorderedRowLimit 'Successful Settings candidate keeps unordered limit'
+    Assert-Equal 300 $successfulCandidate.queryExportTimeoutSeconds 'Successful Settings candidate keeps timeout'
+    Assert-Equal 2 @($successfulCandidate.connections).Count 'Successful Settings candidate keeps connections'
+    Assert-Equal 'SavedServer' $successfulCandidate.connections[0].server 'Successful Settings candidate keeps first server'
+    Assert-Equal 'SavedDatabase' $successfulCandidate.connections[0].database 'Successful Settings candidate keeps first database'
+    Assert-Equal 'SecondServer' $successfulCandidate.connections[1].server 'Successful Settings candidate keeps second server'
+    Assert-Equal 'SecondDatabase' $successfulCandidate.connections[1].database 'Successful Settings candidate keeps second database'
+    Assert-Equal 275 $settingsForm.Tag.Config.previewRowLimit 'Successful settings write enters preview limit state'
+    Assert-Equal 275 ([int] $previewNumeric.Value) 'Successful settings write synchronizes preview numeric'
+    Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Successful settings write preserves displayed preview snapshot'
+    Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Successful settings write preserves displayed preview grid'
 }
 finally {
     $settingsForm.Close()
@@ -761,6 +864,8 @@ try {
     foreach ($column in $resultsGrid.Columns) {
         Assert-True ($column.Width -le 300) 'Result columns are capped at 300 pixels'
         Assert-Equal ([System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None) $column.AutoSizeMode "Grid leaves $($column.Name) fixed after sizing"
+        Assert-Equal ([System.Windows.Forms.DataGridViewColumnSortMode]::Automatic) $column.SortMode `
+            "Query result column $($column.Name) remains client-side sortable"
     }
     $longValueColumn = $resultsGrid.Columns['Description']
     Assert-Equal 300 $longValueColumn.Width 'A long result column reaches the new cap'
@@ -1148,6 +1253,14 @@ try {
     Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Unordered export workflow never opens SQL row stream'
     Assert-Equal 3 $script:queryCompositionRecorder.Exports[1].RowCount 'Unordered export workflow supplies every cached row'
     Assert-Equal 654 $script:queryCompositionRecorder.Exports[1].TimeoutSeconds 'Unordered export workflow forwards configured timeout to Excel'
+
+    $previewCache = New-TestDataTable -RowCount 4
+    $defaultServices = New-SqlUtilityDefaultServices
+    & $defaultServices.ExportPreview $previewCache 'C:\exports\composition-preview.xlsx' 777
+    Assert-Equal 4 $script:queryCompositionRecorder.Exports[2].RowCount 'Preview export service supplies every cached preview row'
+    Assert-Equal 777 $script:queryCompositionRecorder.Exports[2].TimeoutSeconds 'Preview export service forwards configured timeout to Excel'
+    Assert-Equal 'C:\exports\composition-preview.xlsx' $script:queryCompositionRecorder.Exports[2].DestinationPath 'Preview export service forwards selected destination'
+    Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Preview export service never opens a SQL row stream'
 }
 finally {
     Set-Item -Path Function:\Invoke-SqlUtilityOrderedRowStream -Value $originalOrderedRowStream
@@ -1242,7 +1355,7 @@ try {
     Assert-Equal 1000 $recovered.unorderedRowLimit 'Confirmed reset writes default configuration'
 
     $futurePath = Join-Path $startupRoot 'future.json'
-    $futureText = '{"schemaVersion":2,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
+    $futureText = '{"schemaVersion":3,"previewRowLimit":100,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
     $futureBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($futureText)
     [System.IO.File]::WriteAllBytes($futurePath, $futureBytes)
     $futureHarness = New-TestServices
@@ -1276,5 +1389,493 @@ finally {
         Remove-Item -LiteralPath $startupRoot -Recurse -Force
     }
 }
+
+# Data Explorer resize keeps large real-control state and scroll ownership stable.
+$layoutHarness = New-TestServices
+$layoutHarness.Recorder.TablesResult = @(1..100 | ForEach-Object {
+    [pscustomobject]@{ ObjectId=$_; SchemaName='dbo'; TableName=('Table{0:D3}' -f $_); DisplayName=('[dbo].[Table{0:D3}]' -f $_) }
+})
+$layoutHarness.Recorder.ColumnsResult = @(1..80 | ForEach-Object {
+    [pscustomobject]@{ Name=('Column{0:D3}' -f $_); Ordinal=$_; SqlTypeName='nvarchar'; MaxLength=100; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+})
+$layoutPreview = [System.Data.DataTable]::new()
+foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
+    [void] $layoutPreview.Columns.Add($column.Name, [string])
+}
+foreach ($rowNumber in 1..100) {
+    $row = $layoutPreview.NewRow()
+    foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
+        $row[$column.Name] = ('value-{0:D3}-abcdefghijklmnopqrstuvwxyzABCD' -f $rowNumber)
+    }
+    [void] $layoutPreview.Rows.Add($row)
+}
+$layoutHarness.Recorder.PreviewResult = $layoutPreview
+Assert-Equal 40 $layoutPreview.Rows[0][0].Length 'Large preview fixture uses 40-character cell values'
+$layoutForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $layoutHarness.Services
+try {
+    Show-TestForm $layoutForm
+    Enter-TestWorkspace $layoutForm
+    $workspaceTabs = Get-TestControl $layoutForm 'WorkspaceTabs'
+    $workspaceTabs.SelectedTab = Get-TestControl $layoutForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $tableList = Get-TestControl $layoutForm 'PhysicalTablesList'
+    $outputList = Get-TestControl $layoutForm 'OutputColumnsList'
+    $filtersPanel = Get-TestControl $layoutForm 'DataExplorerFiltersPanel'
+    $previewGrid = Get-TestControl $layoutForm 'PreviewGrid'
+    $tableList.SelectedIndex = 0
+    (Get-TestControl $layoutForm 'PreviewButton').PerformClick()
+    foreach ($number in 1..8) {
+        (Get-TestControl $layoutForm 'AddFilterButton').PerformClick()
+        $column = Get-TestControl $layoutForm ('FilterColumnCombo{0}' -f $number)
+        $column.SelectedIndex = $number - 1
+        $operator = Get-TestControl $layoutForm ('FilterOperatorCombo{0}' -f $number)
+        $operator.SelectedIndex = 2
+        (Get-TestControl $layoutForm ('FilterValueText{0}' -f $number)).Text = ('value-{0:D2}' -f $number)
+    }
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $tableList.TopIndex = 10
+    $outputList.TopIndex = 10
+    $filtersPanel.AutoScrollPosition = [System.Drawing.Point]::new(0, 40)
+    $previewGrid.FirstDisplayedScrollingRowIndex = 10
+    $previewGrid.HorizontalScrollingOffset = 40
+    [System.Windows.Forms.Application]::DoEvents()
+
+    $builderBeforeResize = $layoutForm.Tag.DataExplorerBuilder
+    $previewBeforeResize = $layoutForm.Tag.DataExplorerPreview
+    $checkedNamesBeforeResize = @($outputList.CheckedItems | ForEach-Object Name)
+    $filterValuesBeforeResize = @(1..8 | ForEach-Object { (Get-TestControl $layoutForm ('FilterValueText{0}' -f $_)).Text })
+    $tableTopIndexBeforeResize = $tableList.TopIndex
+    $outputTopIndexBeforeResize = $outputList.TopIndex
+    $filterScrollBeforeResize = $filtersPanel.VerticalScroll.Value
+    $mainSplit = Get-TestControl $layoutForm 'DataExplorerMainSplit'
+    $rightSplit = Get-TestControl $layoutForm 'DataExplorerRightSplit'
+    $builderSplit = Get-TestControl $layoutForm 'DataExplorerBuilderSplit'
+    $splitterDistancesBeforeResize = @($mainSplit.SplitterDistance, $rightSplit.SplitterDistance, $builderSplit.SplitterDistance)
+
+    foreach ($size in @(
+        [System.Drawing.Size]::new(760, 520),
+        [System.Drawing.Size]::new(860, 600),
+        [System.Drawing.Size]::new(960, 680),
+        [System.Drawing.Size]::new(1280, 800),
+        [System.Drawing.Size]::new(760, 520)
+    )) {
+        $layoutForm.Size = $size
+        [System.Windows.Forms.Application]::DoEvents()
+        foreach ($name in @(
+            'PhysicalTablesList',
+            'OutputColumnsList',
+            'DataExplorerFiltersPanel',
+            'PreviewGrid'
+        )) {
+            Assert-TestControlContained (Get-TestControl $layoutForm $name) `
+                "$name remains contained at $($size.Width)x$($size.Height)"
+        }
+    }
+
+    $layoutForm.Size = [System.Drawing.Size]::new(960, 680)
+    [System.Windows.Forms.Application]::DoEvents()
+    foreach ($split in @($mainSplit, $rightSplit, $builderSplit)) {
+        $maximumDistance = if ($split.Orientation -eq [System.Windows.Forms.Orientation]::Vertical) {
+            $split.Width - $split.Panel2MinSize - $split.SplitterWidth
+        }
+        else {
+            $split.Height - $split.Panel2MinSize - $split.SplitterWidth
+        }
+        foreach ($distance in @($split.Panel1MinSize, $maximumDistance)) {
+            $split.SplitterDistance = [int] $distance
+            [System.Windows.Forms.Application]::DoEvents()
+            foreach ($name in @(
+                'PhysicalTablesList',
+                'OutputColumnsList',
+                'DataExplorerFiltersPanel',
+                'PreviewGrid'
+            )) {
+                Assert-TestControlContained (Get-TestControl $layoutForm $name) `
+                    "$name remains contained after moving $($split.Name)"
+            }
+        }
+    }
+    $mainSplit.SplitterDistance = $splitterDistancesBeforeResize[0]
+    $rightSplit.SplitterDistance = $splitterDistancesBeforeResize[1]
+    $builderSplit.SplitterDistance = $splitterDistancesBeforeResize[2]
+    [System.Windows.Forms.Application]::DoEvents()
+
+    Assert-True ([object]::ReferenceEquals($builderBeforeResize, $layoutForm.Tag.DataExplorerBuilder)) 'Resize preserves the builder object'
+    Assert-True ([object]::ReferenceEquals($previewBeforeResize, $layoutForm.Tag.DataExplorerPreview)) 'Resize preserves the preview object'
+    Assert-Equal ($checkedNamesBeforeResize -join ',') (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Resize preserves checked columns in order'
+    Assert-Equal ($filterValuesBeforeResize -join ',') (@(1..8 | ForEach-Object { (Get-TestControl $layoutForm ('FilterValueText{0}' -f $_)).Text }) -join ',') 'Resize preserves filter values in order'
+    Assert-True ($tableList.TopIndex -gt 0) 'Resize preserves a nonzero table-list scroll position'
+    Assert-True ($outputList.TopIndex -gt 0) 'Resize preserves a nonzero output-list scroll position'
+    Assert-True ($filtersPanel.VerticalScroll.Value -gt 0) 'Resize preserves a nonzero filter vertical scroll position'
+    Assert-True ($filterScrollBeforeResize -gt 0) 'Large filter fixture establishes vertical scrolling before resize'
+    Assert-Equal $false $filtersPanel.HorizontalScroll.Visible 'Filter rows do not require a horizontal scrollbar'
+    Assert-Equal $true $filtersPanel.VerticalScroll.Visible 'Filter rows retain a visible vertical scrollbar'
+    Assert-Equal ([System.Windows.Forms.ScrollBars]::Both) $previewGrid.ScrollBars 'Preview grid retains both scrollbars'
+    Assert-True ($previewGrid.FirstDisplayedScrollingRowIndex -gt 0) 'Resize preserves a nonzero preview vertical scroll position'
+    Assert-True ($previewGrid.HorizontalScrollingOffset -gt 0) 'Resize preserves a nonzero preview horizontal scroll position'
+    $filtersPanel.AutoScrollPosition = [System.Drawing.Point]::new(0, 0)
+    $onScroll = @([System.Windows.Forms.ScrollableControl].GetMethods([System.Reflection.BindingFlags]'Instance,NonPublic') | Where-Object {
+        $_.Name -eq 'OnScroll' -and $_.GetParameters().Count -eq 1
+    })[0]
+    [void] $onScroll.Invoke($filtersPanel, @([System.Windows.Forms.ScrollEventArgs]::new(
+        [System.Windows.Forms.ScrollEventType]::ThumbPosition,
+        $filterScrollBeforeResize,
+        0,
+        [System.Windows.Forms.ScrollOrientation]::VerticalScroll
+    )))
+    [System.Windows.Forms.Application]::DoEvents()
+    $layoutForm.Size = [System.Drawing.Size]::new(860, 600)
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal 0 $filtersPanel.VerticalScroll.Value 'Resize preserves an intentional filter scroll position at the top'
+}
+finally {
+    $layoutForm.Close()
+    $layoutForm.Dispose()
+}
+
+# Data Explorer loads its catalog on first activation and previews on demand.
+$explorerHarness = New-TestServices
+$explorerHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 2
+$explorerForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $explorerHarness.Services
+try {
+    Show-TestForm $explorerForm
+    Assert-Equal 0 $explorerHarness.Recorder.TableCalls.Count 'Form construction does not load catalog'
+    Enter-TestWorkspace $explorerForm
+    (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    foreach ($name in @(
+        'PhysicalTablesList',
+        'OutputColumnsList',
+        'DataExplorerFiltersPanel',
+        'PreviewGrid'
+    )) {
+        Assert-TestControlContained (Get-TestControl $explorerForm $name) `
+            "$name remains inside its owning pane at default size"
+    }
+    $mainSplit = Get-TestControl $explorerForm 'DataExplorerMainSplit'
+    $rightSplit = Get-TestControl $explorerForm 'DataExplorerRightSplit'
+    $builderSplit = Get-TestControl $explorerForm 'DataExplorerBuilderSplit'
+
+    Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $mainSplit.Orientation `
+        'Table pane is left of the main Data Explorer area'
+    Assert-Equal ([System.Windows.Forms.Orientation]::Horizontal) $rightSplit.Orientation `
+        'Builder is above Preview'
+    Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $builderSplit.Orientation `
+        'Columns are left of filters'
+    Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $mainSplit.FixedPanel `
+        'Main panes resize without a fixed panel'
+    Assert-True ([object]::ReferenceEquals(
+        (Get-TestControl $explorerForm 'PhysicalTablesList').Parent,
+        (Get-TestControl $explorerForm 'DataExplorerTableLayout')
+    )) 'Table list is owned by the table layout'
+    Assert-True ([object]::ReferenceEquals(
+        (Get-TestControl $explorerForm 'PreviewGrid').Parent,
+        (Get-TestControl $explorerForm 'DataExplorerPreviewLayout')
+    )) 'Preview grid is owned by the lower preview layout'
+
+    Assert-Equal $false (Get-TestControl $explorerForm 'PhysicalTablesList').HorizontalScrollbar `
+        'Table list is vertical-scroll only'
+    Assert-Equal $false (Get-TestControl $explorerForm 'OutputColumnsList').HorizontalScrollbar `
+        'Output list is vertical-scroll only'
+    Assert-Equal $true (Get-TestControl $explorerForm 'DataExplorerFiltersPanel').AutoScroll `
+        'Filter pane owns scrolling'
+    Assert-Equal ([System.Windows.Forms.ScrollBars]::Both) `
+        (Get-TestControl $explorerForm 'PreviewGrid').ScrollBars `
+        'Preview grid supports horizontal and vertical scrolling'
+    Assert-Equal 1 $explorerHarness.Recorder.TableCalls.Count 'First activation loads catalog once'
+    Assert-Equal 3 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Catalog binds physical tables'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
+    Assert-Equal 2 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter is case-insensitive substring'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = '%_Star*'
+    Assert-Equal 1 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter treats wildcard characters literally'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
+    (Get-TestControl $explorerForm 'PhysicalTablesList').SelectedIndex = 0
+    Assert-Equal 0 $explorerHarness.Recorder.ColumnCalls.Count 'Selecting table does not load metadata'
+    Assert-Equal 0 $explorerHarness.Recorder.PreviewCalls.Count 'Selecting table does not execute preview'
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'First Preview loads metadata once'
+    Assert-Equal 1 $explorerHarness.Recorder.BuildExplorerCalls.Count 'First Preview builds one query'
+    Assert-Equal 1 $explorerHarness.Recorder.PreviewCalls.Count 'First Preview executes one bounded query'
+    Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
+    Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'First Preview binds returned DataTable'
+    Assert-Equal '2 rows displayed (unordered)' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Preview reports exact unordered rows'
+    foreach ($column in (Get-TestControl $explorerForm 'PreviewGrid').Columns) {
+        Assert-Equal ([System.Windows.Forms.DataGridViewColumnSortMode]::NotSortable) $column.SortMode `
+            "Data Explorer Preview column $($column.Name) remains non-sortable"
+    }
+
+    # Structured filters use all filterable metadata and preserve visual order.
+    (Get-TestControl $explorerForm 'AddFilterButton').PerformClick()
+    (Get-TestControl $explorerForm 'AddFilterButton').PerformClick()
+    $filterColumn1 = Get-TestControl $explorerForm 'FilterColumnCombo1'
+    Assert-Equal 'Id,Name,CreatedAt' (@($filterColumn1.Items | ForEach-Object Name) -join ',') 'Filter choices include unchecked filterable columns and exclude output-only columns'
+    $filterColumn1.SelectedIndex = 2
+    $filterOperator1 = Get-TestControl $explorerForm 'FilterOperatorCombo1'
+    Assert-Equal 'Equals,NotEquals,GreaterThan,GreaterThanOrEqual,LessThan,LessThanOrEqual' (@($filterOperator1.Items | ForEach-Object Key) -join ',') 'Date operators follow type and nullability'
+    $filterOperator1.SelectedIndex = 2
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = '2026-01-01'
+    $filterColumn2 = Get-TestControl $explorerForm 'FilterColumnCombo2'
+    $filterColumn2.SelectedIndex = 1
+    $filterOperator2 = Get-TestControl $explorerForm 'FilterOperatorCombo2'
+    $filterOperator2.SelectedIndex = 2
+    (Get-TestControl $explorerForm 'FilterValueText2').Text = 'north'
+    (Get-TestControl $explorerForm 'OutputColumnsList').SetItemChecked(1,$false)
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    $filterBuild = $explorerHarness.Recorder.BuildExplorerCalls[$explorerHarness.Recorder.BuildExplorerCalls.Count-1]
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($filterBuild.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Preview sends ordered neutral filters'
+    Assert-Equal 'Id,CreatedAt,Payload' (@($filterBuild.SelectedNames) -join ',') 'Filtered unchecked column remains independent from output selection'
+
+    # Client-side filtering that keeps the selected table visible must not rebuild the same builder.
+    $filterPreservedSnapshot = $explorerForm.Tag.DataExplorerPreview
+    $filterPreservedGrid = (Get-TestControl $explorerForm 'PreviewGrid').DataSource
+    $columnCallsBeforeTableFilter = $explorerHarness.Recorder.ColumnCalls.Count
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
+    Assert-Equal 1 $explorerForm.Tag.DataExplorerBuilder.Table.ObjectId 'Matching table filter retains selected object id'
+    Assert-Equal 4 @($explorerForm.Tag.DataExplorerBuilder.Columns).Count 'Matching table filter preserves loaded metadata'
+    Assert-Equal 'Id,CreatedAt,Payload' (@((Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems | ForEach-Object Name) -join ',') 'Matching table filter preserves output choices'
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($explorerForm.Tag.DataExplorerBuilder.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Matching table filter preserves neutral filter state'
+    Assert-Equal 2 (Get-TestControl $explorerForm 'DataExplorerFiltersPanel').Controls.Count 'Matching table filter preserves filter rows'
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01' ("$((Get-TestControl $explorerForm 'FilterColumnCombo1').SelectedItem.Name):$((Get-TestControl $explorerForm 'FilterOperatorCombo1').SelectedItem.Key):$((Get-TestControl $explorerForm 'FilterValueText1').Text)") 'Matching table filter preserves the first filter choice'
+    Assert-Equal 'Name:Contains:north' ("$((Get-TestControl $explorerForm 'FilterColumnCombo2').SelectedItem.Name):$((Get-TestControl $explorerForm 'FilterOperatorCombo2').SelectedItem.Key):$((Get-TestControl $explorerForm 'FilterValueText2').Text)") 'Matching table filter preserves the second filter choice'
+    Assert-Equal $columnCallsBeforeTableFilter $explorerHarness.Recorder.ColumnCalls.Count 'Matching table filter performs no metadata query'
+    Assert-True ([object]::ReferenceEquals($filterPreservedSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Matching table filter preserves preview snapshot state'
+    Assert-True ([object]::ReferenceEquals($filterPreservedGrid,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Matching table filter preserves displayed preview data'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
+
+    $priorPreviewCalls = $explorerHarness.Recorder.PreviewCalls.Count
+    $priorMessages = $explorerHarness.Recorder.Messages.Count
+    $priorSnapshot = $explorerForm.Tag.DataExplorerPreview
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = 'not-a-date'
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal $priorPreviewCalls $explorerHarness.Recorder.PreviewCalls.Count 'Invalid typed filter prevents preview execution'
+    Assert-Equal ($priorMessages+1) $explorerHarness.Recorder.Messages.Count 'Invalid typed filter shows one validation message'
+    Assert-True ([object]::ReferenceEquals($priorSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Invalid typed filter preserves preview snapshot'
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = '2026-01-01'
+
+    $filterColumn2.SelectedIndex = 2
+    Assert-Equal 2 $filterColumn2.SelectedIndex 'Duplicate filter columns are permitted'
+    $filterColumn2.SelectedIndex = 1
+    $filterOperator2.SelectedIndex = 4
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueText2').Enabled 'Value-free operator disables its value input'
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueText2').Visible 'Value-free text operator hides its value input'
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueBitCombo2').Visible 'Value-free text operator keeps bit input hidden'
+    $filterOperator2.SelectedIndex = 2
+    Assert-Equal $true (Get-TestControl $explorerForm 'FilterValueText2').Visible 'Value-bearing text operator shows its text input again'
+    Assert-Equal $true (Get-TestControl $explorerForm 'FilterValueText2').Enabled 'Value-bearing text operator enables its text input again'
+
+    # Send uses current builder state, confirms replacement, selects Query, and never executes it.
+    $sendButton = Get-TestControl $explorerForm 'SendToQueryButton'
+    $sqlEditor = Get-TestControl $explorerForm 'SqlEditor'
+    $sqlEditor.Text = 'SELECT Existing FROM dbo.KeepMe'
+    $explorerHarness.Recorder.ConfirmResult = $false
+    $sendButton.PerformClick()
+    Assert-Equal 'SELECT Existing FROM dbo.KeepMe' $sqlEditor.Text 'Decline preserves editor'
+    $explorerHarness.Recorder.ConfirmResult = $true
+    $sendButton.PerformClick()
+    Assert-Equal 0 $explorerHarness.Recorder.OrderedCalls.Count 'Send does not execute Query tab SQL'
+    Assert-Equal (Get-TestControl $explorerForm 'QueryTab') (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab 'Send selects Query tab'
+    Assert-True ($sqlEditor.Text -like 'SELECT *FROM*') 'Confirm writes generated current builder SQL'
+    $sentSql = $sqlEditor.Text;$selectedTab=(Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab;$explorerHarness.Recorder.BuildExplorerError='build failed'
+    $sendButton.PerformClick()
+    Assert-Equal $sentSql $sqlEditor.Text 'Builder failure preserves editor text'
+    Assert-Equal $selectedTab (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab 'Builder failure preserves selected tab'
+    $explorerHarness.Recorder.BuildExplorerError=$null
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'Later Preview reuses metadata'
+    (Get-TestControl $explorerForm 'SelectNoColumnsButton').PerformClick()
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal 2 $explorerHarness.Recorder.PreviewCalls.Count 'No columns prevents preview execution'
+    Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Selection changes preserve snapshot'
+    $previewLimit = Get-TestControl $explorerForm 'PreviewLimitNumeric'
+    Assert-Equal 10 ([int] $previewLimit.Minimum) 'Preview limit minimum is 10'
+    Assert-Equal 500 ([int] $previewLimit.Maximum) 'Preview limit maximum is 500'
+
+    # Query execution must not disturb an independent Explorer snapshot.
+    $priorExplorerSnapshot = $explorerForm.Tag.DataExplorerPreview
+    $explorerHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 1) -PageNumber 1
+    (Get-TestControl $explorerForm 'SqlEditor').Text = 'SELECT Id FROM dbo.Items ORDER BY Id'
+    (Get-TestControl $explorerForm 'ExecuteButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Query execution preserves Explorer snapshot'
+    Assert-Equal $true $explorerForm.Tag.DataExplorerTablesLoaded 'Query execution preserves loaded catalog state'
+
+    # Refresh retains a matching object id, resets the builder, and preserves preview.
+    (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
+    (Get-TestControl $explorerForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal 1 $explorerForm.Tag.DataExplorerBuilder.Table.ObjectId 'Refresh retains matching table object id'
+    Assert-Equal 0 @($explorerForm.Tag.DataExplorerBuilder.Columns).Count 'Refresh resets cached metadata'
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Refresh preserves preview snapshot'
+    $explorerHarness.Recorder.TablesResult = @($explorerHarness.Recorder.TablesResult | Where-Object ObjectId -ne 1)
+    (Get-TestControl $explorerForm 'RefreshTablesButton').PerformClick()
+    Assert-True ($null -eq $explorerForm.Tag.DataExplorerBuilder.Table) 'Refresh clears a removed table selection'
+    Assert-True ([object]::ReferenceEquals($priorExplorerSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Removed selection still preserves preview snapshot'
+
+    # Confirmed connection reset clears every Explorer state and display surface.
+    Reset-SqlUtilityWorkspaceState $explorerForm
+    Assert-Equal $false $explorerForm.Tag.DataExplorerTablesLoaded 'Connection reset clears loaded marker'
+    Assert-Equal 0 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Connection reset clears table list'
+    Assert-Equal 0 (Get-TestControl $explorerForm 'OutputColumnsList').Items.Count 'Connection reset clears output list'
+    Assert-True ($null -eq (Get-TestControl $explorerForm 'PreviewGrid').DataSource) 'Connection reset clears preview grid'
+    Assert-Equal '' (Get-TestControl $explorerForm 'PreviewSourceLabel').Text 'Connection reset clears preview source'
+    Assert-Equal '' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Connection reset clears preview status'
+}
+finally { $explorerForm.Dispose() }
+
+# Export Preview always uses the exact successful displayed snapshot and never reruns SQL.
+$previewExportHarness = New-TestServices
+$previewA = New-TestDataTable -RowCount 2
+$previewExportHarness.Recorder.PreviewResult = $previewA
+$previewExportHarness.Recorder.PromptPath = 'C:\exports\preview.xlsx'
+$previewExportForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $previewExportHarness.Services
+try {
+    Show-TestForm $previewExportForm; Enter-TestWorkspace $previewExportForm
+    (Get-TestControl $previewExportForm 'WorkspaceTabs').SelectedTab=Get-TestControl $previewExportForm 'DataExplorerTab';[System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=0
+    Assert-Equal $true (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Selected table enables Preview before metadata exists'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'SendToQueryButton').Enabled 'Send remains disabled before metadata exists'
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    $snapshotA=$previewExportForm.Tag.DataExplorerPreview;$sourceA=(Get-TestControl $previewExportForm 'PreviewSourceLabel').Text
+    $exportPreviewButton=Get-TestControl $previewExportForm 'ExportPreviewButton'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Successful Preview enables Export Preview'
+    (Get-TestControl $previewExportForm 'OutputColumnsList').SetItemChecked(0,$false)
+    (Get-TestControl $previewExportForm 'AddFilterButton').PerformClick()
+    (Get-TestControl $previewExportForm 'FilterValueText1').Text='snapshot-independent-filter'
+    (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=1
+    (Get-TestControl $previewExportForm 'PreviewLimitNumeric').Value=222
+    Assert-True ([object]::ReferenceEquals($snapshotA,$previewExportForm.Tag.DataExplorerPreview)) 'Builder table columns filters and settings changes preserve snapshot'
+    Assert-True ([object]::ReferenceEquals($previewA,(Get-TestControl $previewExportForm 'PreviewGrid').DataSource)) 'Builder changes preserve displayed preview data'
+    Assert-Equal $sourceA (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Builder changes preserve preview source label'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Builder changes keep Export Preview enabled'
+    $previewCallsBeforeExport=$previewExportHarness.Recorder.PreviewCalls.Count
+    $exportPreviewButton.PerformClick()
+    Assert-Equal 1 $previewExportHarness.Recorder.ExportPreviewCalls.Count 'Export Preview calls exporter once'
+    Assert-True ([object]::ReferenceEquals($previewA,$previewExportHarness.Recorder.ExportPreviewCalls[0].DataTable)) 'Export Preview passes exact displayed DataTable'
+    Assert-Equal $previewCallsBeforeExport $previewExportHarness.Recorder.PreviewCalls.Count 'Export Preview performs no additional SQL'
+    Assert-Equal 120 $previewExportHarness.Recorder.ExportPreviewCalls[0].TimeoutSeconds 'Export Preview forwards active timeout'
+    Assert-True ($previewExportHarness.Recorder.Messages[-1].Text -like '*2 rows*') 'Export Preview success reports exported row count'
+    $previewB=New-TestDataTable -RowCount 3;$previewExportHarness.Recorder.PreviewResult=$previewB
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($previewB,$previewExportForm.Tag.DataExplorerPreview.Data)) 'Later successful Preview replaces snapshot'
+    $snapshotB=$previewExportForm.Tag.DataExplorerPreview;$previewExportHarness.Recorder.PreviewError='preview failed'
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($snapshotB,$previewExportForm.Tag.DataExplorerPreview)) 'Failed Preview preserves last successful snapshot'
+    $previewExportHarness.Recorder.PreviewError=$null;$previewExportHarness.Recorder.PromptPath=$null
+    $exportCallsBeforeCancel=$previewExportHarness.Recorder.ExportPreviewCalls.Count;$exportPreviewButton.PerformClick()
+    Assert-Equal $exportCallsBeforeCancel $previewExportHarness.Recorder.ExportPreviewCalls.Count 'Canceled Export Preview prompt does not call exporter'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Canceled Export Preview preserves action state'
+    $previewExportHarness.Recorder.PromptPath='C:\exports\preview.xlsx';$previewExportHarness.Recorder.ExportPreviewError='export failed';$exportPreviewButton.PerformClick()
+    Assert-True ([object]::ReferenceEquals($snapshotB,$previewExportForm.Tag.DataExplorerPreview)) 'Failed Export Preview preserves snapshot'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Failed Export Preview restores action state'
+    Set-SqlUtilityBusy $previewExportForm $true 'Working...'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Busy state disables Preview'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'SendToQueryButton').Enabled 'Busy state disables Send'
+    Assert-Equal $false $exportPreviewButton.Enabled 'Busy state disables Export Preview'
+    Set-SqlUtilityBusy $previewExportForm $false 'Ready.'
+    Assert-Equal $true (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Ready state restores Preview for selected table'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Ready state restores Export Preview for snapshot'
+    (Get-TestControl $previewExportForm 'TableFilterTextBox').Text='Orders'
+    $previewExportForm.Tag.DataExplorerFilterRowNumber=37
+    $previewExportHarness.Recorder.ConfirmResult=$true
+    (Get-TestControl $previewExportForm 'ChangeConnectionButton').PerformClick()
+    Assert-True ($previewExportHarness.Recorder.ConfirmCalls[-1].Text -like '*Data Explorer*') 'Change Connection confirmation names Explorer state loss'
+    Assert-True ($null -eq $previewExportForm.Tag.DataExplorerPreview) 'Confirmed Change Connection clears preview snapshot'
+    Assert-Equal $false $exportPreviewButton.Enabled 'Confirmed Change Connection disables Export Preview'
+    Assert-True ($null -eq (Get-TestControl $previewExportForm 'PreviewGrid').DataSource) 'Confirmed Change Connection clears preview grid'
+    Assert-Equal '' (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Confirmed Change Connection clears preview source label'
+    Assert-Equal '' (Get-TestControl $previewExportForm 'TableFilterTextBox').Text 'Confirmed Change Connection clears table-list filter'
+    Assert-Equal 0 $previewExportForm.Tag.DataExplorerFilterRowNumber 'Confirmed Change Connection resets filter-row counter'
+}
+finally { $previewExportForm.Dispose() }
+
+# Bit filters use a constrained Boolean selector and emit its neutral label.
+$bitHarness = New-TestServices
+$bitHarness.Recorder.ColumnsResult += [pscustomobject]@{ Name='IsActive'; Ordinal=5; SqlTypeName='bit'; MaxLength=1; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+$bitHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 1
+$bitForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $bitHarness.Services
+try {
+    Show-TestForm $bitForm; Enter-TestWorkspace $bitForm
+    (Get-TestControl $bitForm 'WorkspaceTabs').SelectedTab=Get-TestControl $bitForm 'DataExplorerTab';[System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $bitForm 'PhysicalTablesList').SelectedIndex=0;(Get-TestControl $bitForm 'PreviewButton').PerformClick()
+    (Get-TestControl $bitForm 'AddFilterButton').PerformClick()
+    $bitColumn=Get-TestControl $bitForm 'FilterColumnCombo1';$bitColumn.SelectedIndex=3
+    $bitValue=Get-TestControl $bitForm 'FilterValueBitCombo1'
+    Assert-Equal 'True,False' (@($bitValue.Items)-join ',') 'Bit value selector is constrained to Boolean labels'
+    $bitOperator=Get-TestControl $bitForm 'FilterOperatorCombo1';$bitOperator.SelectedIndex=2
+    Assert-Equal $false $bitValue.Visible 'Value-free bit operator hides its bit input'
+    Assert-Equal $false $bitValue.Enabled 'Value-free bit operator disables its bit input'
+    Assert-Equal $false (Get-TestControl $bitForm 'FilterValueText1').Visible 'Value-free bit operator keeps text input hidden'
+    $bitOperator.SelectedIndex=0
+    Assert-Equal $true $bitValue.Visible 'Value-bearing bit operator shows its bit input again'
+    Assert-Equal $true $bitValue.Enabled 'Value-bearing bit operator enables its bit input again'
+    Assert-Equal $false (Get-TestControl $bitForm 'FilterValueText1').Visible 'Value-bearing bit operator keeps text input hidden'
+    $bitValue.SelectedItem='False';(Get-TestControl $bitForm 'PreviewButton').PerformClick()
+    $bitBuild=$bitHarness.Recorder.BuildExplorerCalls[$bitHarness.Recorder.BuildExplorerCalls.Count-1]
+    Assert-Equal 'False' $bitBuild.Filters[0].ValueText 'Bit filter emits selected neutral label'
+}
+finally { $bitForm.Dispose() }
+
+# Failed initial catalog load remains retryable.
+$catalogRetryHarness = New-TestServices
+$catalogRetryHarness.Recorder.TableError = 'catalog unavailable'
+$catalogRetryForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $catalogRetryHarness.Services
+try {
+    Show-TestForm $catalogRetryForm; Enter-TestWorkspace $catalogRetryForm
+    (Get-TestControl $catalogRetryForm 'WorkspaceTabs').SelectedTab = Get-TestControl $catalogRetryForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal $false $catalogRetryForm.Tag.DataExplorerTablesLoaded 'Failed initial catalog remains unloaded'
+    $catalogRetryHarness.Recorder.TableError = $null
+    (Get-TestControl $catalogRetryForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal $true $catalogRetryForm.Tag.DataExplorerTablesLoaded 'Refresh retries failed initial catalog'
+    Assert-Equal 2 $catalogRetryHarness.Recorder.TableCalls.Count 'Catalog retry makes a second call'
+}
+finally { $catalogRetryForm.Dispose() }
+
+# Preview failures preserve the last successful display; row failure retains newly loaded metadata.
+$failureHarness = New-TestServices
+$oldPreview = New-TestDataTable -RowCount 1
+$failureHarness.Recorder.PreviewResult = $oldPreview
+$failureForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $failureHarness.Services
+try {
+    Show-TestForm $failureForm; Enter-TestWorkspace $failureForm
+    (Get-TestControl $failureForm 'WorkspaceTabs').SelectedTab = Get-TestControl $failureForm 'DataExplorerTab'; [System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $failureForm 'PhysicalTablesList').SelectedIndex=0; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    $oldSnapshot=$failureForm.Tag.DataExplorerPreview
+    (Get-TestControl $failureForm 'RefreshTablesButton').PerformClick()
+    $failureHarness.Recorder.ColumnError='metadata failed'; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Metadata failure preserves snapshot'
+    Assert-True ([object]::ReferenceEquals($oldPreview,(Get-TestControl $failureForm 'PreviewGrid').DataSource)) 'Metadata failure preserves grid'
+    $failureHarness.Recorder.ColumnError=$null; $failureHarness.Recorder.PreviewError='rows failed'; (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-Equal 4 @($failureForm.Tag.DataExplorerBuilder.Columns).Count 'Row failure retains loaded metadata'
+    Assert-Equal 4 (Get-TestControl $failureForm 'OutputColumnsList').CheckedItems.Count 'Row failure retains all-selected output'
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Row failure preserves snapshot'
+
+    # Rendering failure rolls back partially changed UI and state.
+    $failureHarness.Recorder.PreviewError=$null; $newPreview=New-TestDataTable -RowCount 3; $failureHarness.Recorder.PreviewResult=$newPreview
+    $script:previewBindingChanges=0
+    (Get-TestControl $failureForm 'PreviewGrid').Add_DataSourceChanged({$script:previewBindingChanges++;if($script:previewBindingChanges-eq 1){throw 'render failed'}})
+    (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($oldSnapshot,$failureForm.Tag.DataExplorerPreview)) 'Rendering failure preserves snapshot state'
+    Assert-True ([object]::ReferenceEquals($oldPreview,(Get-TestControl $failureForm 'PreviewGrid').DataSource)) 'Rendering failure restores prior grid'
+    Assert-Equal $oldSnapshot.SourceTable (Get-TestControl $failureForm 'PreviewSourceLabel').Text 'Rendering failure restores source label'
+
+    # Empty preview remains successful and keeps schema.
+    $emptyPreview=New-TestDataTable -RowCount 0; $failureHarness.Recorder.PreviewResult=$emptyPreview
+    (Get-TestControl $failureForm 'PreviewButton').PerformClick()
+    Assert-Equal 0 (Get-TestControl $failureForm 'PreviewGrid').Rows.Count 'Empty preview displays zero rows'
+    Assert-Equal 2 (Get-TestControl $failureForm 'PreviewGrid').Columns.Count 'Empty preview preserves schema columns'
+    Assert-Equal '0 rows displayed (unordered)' (Get-TestControl $failureForm 'PreviewStatusLabel').Text 'Empty preview reports zero rows'
+
+    $displayed=$failureForm.Tag.DataExplorerPreview
+    (Get-TestControl $failureForm 'SelectNoColumnsButton').PerformClick(); (Get-TestControl $failureForm 'SelectAllColumnsButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($displayed,$failureForm.Tag.DataExplorerPreview)) 'All and None preserve displayed snapshot'
+
+    # Failed settings save keeps active limit and preview.
+    (Get-TestControl $failureForm 'PreviewLimitNumeric').Value=321; $failureHarness.Recorder.WriteError='settings failed'
+    (Get-TestControl $failureForm 'SaveSettingsButton').PerformClick()
+    Assert-Equal 100 $failureForm.Tag.Config.previewRowLimit 'Failed settings save preserves active preview limit'
+    Assert-True ([object]::ReferenceEquals($displayed,$failureForm.Tag.DataExplorerPreview)) 'Failed settings save preserves preview snapshot'
+}
+finally { $failureForm.Dispose() }
 
 Complete-TestFile 'All SQL Utility UI tests passed.'

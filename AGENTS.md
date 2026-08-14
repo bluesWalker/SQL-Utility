@@ -2,7 +2,7 @@
 
 ## Project Context
 
-SQL Utility is a portable internal Windows PowerShell 5.1 WinForms client for Windows-authenticated SQL Server connection testing, restricted read-only querying, result paging, and dependency-free `.xlsx` export. Read [README.md](README.md) for current user behavior, architecture, and operating instructions.
+SQL Utility is a portable internal Windows PowerShell 5.1 WinForms client for Windows-authenticated SQL Server connection testing, constrained physical-table exploration, restricted read-only querying, result paging, and dependency-free `.xlsx` export. Read [README.md](README.md) for current user behavior, architecture, and operating instructions.
 
 ## Instruction Scope
 
@@ -18,6 +18,7 @@ Before changing behavior, read:
 2. [SQL Utility Version 1 Design](docs/superpowers/specs/2026-08-02-sql-utility-v1-design.md) for approved product and architecture boundaries.
 3. [SQL Utility Version 1 Implementation Plan](docs/superpowers/plans/2026-08-02-sql-utility-v1.md) when historical task decomposition or design rationale is relevant. Treat final code and newer review fixes as authoritative over superseded plan snippets.
 4. [Project Documentation Design](docs/superpowers/specs/2026-08-05-project-documentation-design.md) when changing documentation ownership or structure.
+5. [SQL Utility Data Explorer Design](docs/superpowers/specs/2026-08-14-sql-utility-data-explorer-design.md) when changing Data Explorer behavior, configuration, architecture, or tests.
 
 Inspect the relevant production code and tests before proposing a change. Do not infer current behavior from filenames or old plans alone.
 
@@ -29,7 +30,7 @@ Inspect the relevant production code and tests before proposing a change. Do not
 - Do not add an installer, compiled executable, third-party module, NuGet dependency, Python runtime, `sqlcmd` dependency, Office automation, or administrator requirement.
 - Do not write to the registry or modify user/machine/process environment variables.
 - Preserve Windows integrated authentication only. Never introduce, request, log, serialize, or persist usernames, passwords, tokens, or SQL-authentication credentials.
-- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, and the four required files under `modules/` unless the user explicitly approves a packaging change.
+- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, and the five required files under `modules/` unless the user explicitly approves a packaging change.
 
 ## Architecture Boundaries
 
@@ -39,10 +40,11 @@ Keep each file focused on its established ownership:
 - `SqlUtility.ps1`: WinForms construction, application state, workflow orchestration, service boundaries, result binding, paging controls, status, and user messages.
 - `modules/SqlUtility.Config.ps1`: configuration defaults/schema validation, saved-pair operations, JSON reads, and safe app-local writes.
 - `modules/SqlUtility.QueryPolicy.ps1`: SQL tokenization, named-source read-only grammar, approved `INNER JOIN`/`LEFT JOIN` chain validation, normalization, primary-table extraction, and top-level ordering detection.
-- `modules/SqlUtility.Database.ps1`: connection strings, SQL connections/commands/readers, diagnostic tests, paging, neutral result conversion, ordered streaming, timeouts, cancellation where possible, and deterministic disposal.
+- `modules/SqlUtility.DataExplorer.ps1`: UI-neutral table/column/filter validation, type/operator rules, catalog-derived identifier quoting, typed conversion, parameterized preview descriptors, and safe Query-editor SQL generation.
+- `modules/SqlUtility.Database.ps1`: connection strings, SQL connections/commands/readers, diagnostic tests, fixed physical-table/column catalog queries, typed bounded previews, paging, neutral result conversion, ordered streaming, timeouts, cancellation where possible, and deterministic disposal.
 - `modules/SqlUtility.Excel.ps1`: neutral schema/row input to `.xlsx`, workbook limits, OOXML data fidelity, timeout checks, and safe destination replacement.
 
-Do not add WinForms dependencies to the Database or Excel modules. Do not let Excel own SQL connections, commands, or readers. Do not add database access to QueryPolicy. Do not let Database render controls. Pass data through neutral `DataTable`, page metadata, schema, and row-value boundaries.
+Do not add WinForms dependencies to the DataExplorer, Database, or Excel modules. Do not add database access to DataExplorer or QueryPolicy. Do not let DataExplorer replace or weaken QueryPolicy. Do not let Excel own SQL connections, commands, or readers. Do not let Database render controls. Pass data through neutral builder/command descriptors, `DataTable`, page metadata, schema, and row-value boundaries.
 
 Preserve deterministic cleanup of SQL connections, commands, readers, streams, ZIP packages, XML writers, temporary files, and backups. Cleanup errors must not mask the primary failure or misreport a committed write as failed.
 
@@ -52,6 +54,7 @@ Preserve deterministic cleanup of SQL connections, commands, readers, streams, Z
 - Only a successful connection test may add/persist a server/database pair. Pairs are unique case-insensitively.
 - Persistent application state is limited to validated `SqlUtility.config.json` and its same-directory safe-write transients. Export files/transients use only the user-selected destination directory.
 - Configuration safe writes preserve the prior file on pre-commit failure. Only actual parse/schema corruption may offer reset; environmental read failures exit unchanged.
+- Configuration schema version 2 includes `previewRowLimit`, an integer from `10` through `500`, default `100`. Valid schema 1 input migrates in memory without a read-time rewrite; all later config copies and writes preserve the value.
 - `unorderedRowLimit` is `100` through `2000`, default `1000`.
 - `queryExportTimeoutSeconds` is `5` through `3600`, default `120`. Connection timeout stays fixed at `10` seconds.
 - Display pages remain fixed at `500` rows.
@@ -59,6 +62,8 @@ Preserve deterministic cleanup of SQL connections, commands, readers, streams, Z
 - Unordered execution retains at most the configured limit after probing one additional row. Local paging must not repeat the SQL query.
 - Paging and export use the exact last successful normalized query snapshot. Editor changes make results stale.
 - Export is allowed only when the complete result is available: ordered results stream a fresh complete execution; complete unordered results use the full cache; incomplete/truncated unordered results must be rejected before prompting.
+- Data Explorer lists only catalog-returned physical user tables. Selecting a table performs no metadata or row query; Preview explicitly loads metadata when needed and returns at most `previewRowLimit` unordered rows with no paging, sentinel, count, or completeness claim.
+- Data Explorer builder state and the last successful preview snapshot are independent. Builder/settings changes and failed actions preserve the displayed snapshot. Export Preview exports that exact `DataTable` without re-running SQL; Send to Query uses current builder state, confirms before replacing nonblank editor text, and never executes.
 - Excel export must preserve the existing destination until a complete workbook is ready. Preserve row/text limits, formula-literal safety, binary hex fidelity, OOXML escaping, early-date handling, and timeout cleanup.
 - The query policy remains one statement and read-only `SELECT`. It permits one primary one- or two-part named source plus zero or more chained bare/`INNER JOIN`, `LEFT JOIN`, or `LEFT OUTER JOIN` units, each with one named source and a required valid `ON` predicate. It continues to exclude all other join/apply/source forms, subqueries, CTEs, set operators, batches, stored/dynamic SQL, external sources, and data-changing, DDL, transaction, permission, or administrative commands.
 - Treat query validation as an accidental-change safety boundary, not a replacement for least-privileged SQL Server permissions.
@@ -83,6 +88,7 @@ Run the focused test that owns the changed contract during development, for exam
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Config.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-QueryPolicy.ps1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-DataExplorer.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Database.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Excel.ps1
 powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Test-SqlUtilityUi.ps1
@@ -112,7 +118,8 @@ Do not claim that work is complete or passing without fresh command output from 
 
 Keep documentation synchronized with the contract it owns:
 
-- Update `README.md` when user workflow, runtime files, settings, architecture, query policy, paging, export, security, testing, or limitations change.
+- Update `README.md` when user workflow, runtime files, settings, architecture, Data Explorer, query policy, paging, export, security, testing, or limitations change.
+- Update the Data Explorer design before materially changing its physical-table scope, filter grammar/type matrix, preview/snapshot behavior, generated SQL, or configuration contract.
 - Update the approved design before implementing a material product/architecture scope change.
 - Update implementation plans when future work is decomposed, but do not present stale plan snippets as current behavior.
 - Update `AGENTS.md` when repository-wide engineering or verification rules change.

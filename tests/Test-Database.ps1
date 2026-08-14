@@ -19,6 +19,10 @@ function Assert-PageResultShape($Result, [string] $Message) {
     Assert-Equal $expected $actual "$Message exposes the neutral page-result contract"
 }
 
+function Find-ParameterDescriptor($Descriptors, [string] $Name) {
+    return @($Descriptors | Where-Object { $_.Name -eq $Name })[0]
+}
+
 $duplicateSchema = New-SqlUtilityResultTable -Columns @(
     [pscustomobject]@{ Name = 'Column 5'; DataType = [bool]; Ordinal = 6 },
     [pscustomobject]@{ Name = 'ID'; DataType = [string]; Ordinal = 2 },
@@ -48,6 +52,91 @@ Assert-Equal '' $connectionBuilder.UserID 'Connection string has no user name'
 Assert-Equal '' $connectionBuilder.Password 'Connection string has no password'
 Assert-Equal 'SQL Utility' $connectionBuilder.ApplicationName 'Connection string has the application name'
 Assert-Equal 10 $connectionBuilder.ConnectTimeout 'Connection string has a ten-second connect timeout'
+
+$script:addedParameters = New-Object System.Collections.Generic.List[object]
+$fakeParameters = [pscustomobject]@{}
+$fakeParameters | Add-Member -MemberType ScriptMethod -Name Add -Value {
+    param($Name, $SqlDbType)
+    $parameter = [pscustomobject]@{ Name = $Name; SqlDbType = $SqlDbType; Size = 0; Precision = 0; Scale = 0; Value = $null }
+    [void] $script:addedParameters.Add($parameter)
+    return $parameter
+}
+$fakeCommand = [pscustomobject]@{ Parameters = $fakeParameters }
+Add-SqlUtilityCommandParameters -Command $fakeCommand -ParameterDescriptors @(
+    [pscustomobject]@{ Name = 'Text'; SqlDbType = [System.Data.SqlDbType]::NVarChar; Size = 40; Precision = 0; Scale = 0; Value = 'typed' },
+    [pscustomobject]@{ Name = 'Amount'; SqlDbType = [System.Data.SqlDbType]::Decimal; Size = 0; Precision = 12; Scale = 3; Value = [decimal] 1.25 },
+    [pscustomobject]@{ Name = 'Missing'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = $null }
+)
+Assert-Equal '@Text' $script:addedParameters[0].Name 'Typed parameters add the SQL marker'
+Assert-Equal 40 $script:addedParameters[0].Size 'Typed parameters preserve Size'
+Assert-Equal 12 $script:addedParameters[1].Precision 'Typed parameters preserve Precision'
+Assert-Equal 3 $script:addedParameters[1].Scale 'Typed parameters preserve Scale'
+Assert-Equal ([decimal] 1.25) $script:addedParameters[1].Value 'Typed parameters preserve typed values'
+Assert-True ([DBNull]::Value.Equals($script:addedParameters[2].Value)) 'Typed parameters convert null to DBNull'
+$databaseSource = Get-Content -Raw (Join-Path $projectRoot 'modules\SqlUtility.Database.ps1')
+Assert-True ($databaseSource -notmatch 'AddWithValue') 'Database parameters never use AddWithValue'
+
+$script:tableCall = $null
+$tableExecutor = {
+    param($ConnectionString, $CommandText, $ParameterDescriptors, $CommandTimeoutSeconds, $MaximumRows)
+    $script:tableCall = [pscustomobject]@{ CommandText = $CommandText; ParameterDescriptors = $ParameterDescriptors; CommandTimeoutSeconds = $CommandTimeoutSeconds; MaximumRows = $MaximumRows }
+    $table = [System.Data.DataTable]::new()
+    [void] $table.Columns.Add('ObjectId', [int]); [void] $table.Columns.Add('SchemaName', [string]); [void] $table.Columns.Add('TableName', [string])
+    [void] $table.Rows.Add(42, 'sales', 'Order]Header')
+    return (, $table)
+}
+$tables = Get-SqlUtilityPhysicalTables -Server 's' -Database 'd' -CommandTimeoutSeconds 120 -Executor $tableExecutor
+Assert-Equal '[sales].[Order]]Header]' $tables[0].DisplayName 'Table display is safely bracketed'
+Assert-True ($script:tableCall.CommandText -match 'sys\.tables') 'Catalog reads sys.tables'
+Assert-True ($script:tableCall.CommandText -match 'is_ms_shipped\s*=\s*0') 'Catalog excludes shipped tables'
+Assert-Equal ([int]::MaxValue) $script:tableCall.MaximumRows 'Catalog returns all visible physical tables'
+
+$script:columnCall = $null
+$columnExecutor = {
+    param($ConnectionString, $CommandText, $ParameterDescriptors, $CommandTimeoutSeconds, $MaximumRows)
+    $script:columnCall = [pscustomobject]@{ CommandText = $CommandText; ParameterDescriptors = $ParameterDescriptors; CommandTimeoutSeconds = $CommandTimeoutSeconds; MaximumRows = $MaximumRows }
+    $table = [System.Data.DataTable]::new()
+    foreach ($column in @(@('ObjectId',[int]),@('SchemaName',[string]),@('TableName',[string]),@('Name',[string]),@('Ordinal',[int]),@('SqlTypeName',[string]),@('MaxLength',[int]),@('Precision',[byte]),@('Scale',[byte]),@('IsNullable',[bool]),@('IsUserDefined',[bool]))) { [void] $table.Columns.Add($column[0], $column[1]) }
+    [void] $table.Rows.Add(42, 'dbo', 'Plants', 'PlantID', 1, 'nvarchar', 100, 0, 0, $false, $false)
+    [void] $table.Rows.Add(42, 'dbo', 'Plants', 'Shape', 2, 'geometry', -1, 0, 0, $true, $true)
+    return (, $table)
+}
+$columns = Get-SqlUtilityTableColumns -Server 's' -Database 'd' -TableObjectId 42 -CommandTimeoutSeconds 120 -Executor $columnExecutor
+Assert-Equal 'PlantID' $columns[0].Name 'Column metadata retains name'
+Assert-Equal 'nvarchar' $columns[0].SqlTypeName 'Column metadata exposes base SQL type'
+Assert-True ($script:columnCall.CommandText -match '(?s)COALESCE\s*\(\s*base_type\.name\s*,\s*declared_type\.name\s*\)\s+AS\s+SqlTypeName') 'Column metadata falls back to the declared type name'
+Assert-True ($script:columnCall.CommandText -match '(?s)LEFT\s+JOIN\s+sys\.types\s+AS\s+base_type') 'Column metadata retains declarations without a canonical base-type row'
+Assert-True ($script:columnCall.CommandText -match 'declared_type\.is_assembly_type\s*=\s*1') 'Column metadata keeps assembly types marked as output-only'
+Assert-Equal 2 $columns.Count 'Column metadata retains ordinary and assembly-backed columns'
+Assert-Equal 'geometry' $columns[1].SqlTypeName 'Assembly-backed metadata exposes the declared type fallback'
+Assert-Equal $true $columns[1].IsUserDefined 'Assembly-backed metadata remains output-only'
+Assert-Equal 42 (Find-ParameterDescriptor $script:columnCall.ParameterDescriptors 'TableObjectId').Value 'Column metadata uses object-id parameter'
+
+$script:previewCall = $null
+$previewTable = New-NumberedTable 2
+$previewQuery = [pscustomobject]@{
+    PreviewSql = 'SELECT TOP (@PreviewRowLimit) [PlantID] FROM [dbo].[Plants];'
+    PreviewParameters = [object[]] @([pscustomobject]@{ Name = 'PreviewRowLimit'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = 25 })
+    EditorSql = 'SELECT [PlantID] FROM [dbo].[Plants];'
+}
+$preview = Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit 25 -CommandTimeoutSeconds 77 -Executor {
+    param($ConnectionString, $CommandText, $ParameterDescriptors, $CommandTimeoutSeconds, $MaximumRows)
+    $script:previewCall = [pscustomobject]@{ CommandText = $CommandText; ParameterDescriptors = $ParameterDescriptors; CommandTimeoutSeconds = $CommandTimeoutSeconds; MaximumRows = $MaximumRows }
+    return (, $previewTable)
+}
+Assert-True ([object]::ReferenceEquals($previewTable, $preview)) 'Preview returns executor DataTable directly'
+Assert-Equal $previewQuery.PreviewSql $script:previewCall.CommandText 'Preview forwards descriptor SQL'
+Assert-True ([object]::ReferenceEquals($previewQuery.PreviewParameters, $script:previewCall.ParameterDescriptors)) 'Preview forwards typed descriptors'
+Assert-Equal 77 $script:previewCall.CommandTimeoutSeconds 'Preview forwards timeout'
+Assert-Equal 25 $script:previewCall.MaximumRows 'Preview uses exact configured maximum'
+foreach ($invalidLimit in @(9, 501)) {
+    Assert-Throws { Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit $invalidLimit -CommandTimeoutSeconds 5 -Executor { throw 'must not run' } } `
+        'System.ArgumentOutOfRangeException' 'Preview rejects limits outside 10 through 500'
+}
+foreach ($nonIntegralLimit in @('25', 25.4)) {
+    Assert-Throws { Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit $nonIntegralLimit -CommandTimeoutSeconds 5 -Executor { throw 'must not run' } } `
+        'System.ArgumentException' 'Preview rejects values that are not integral CLR numeric types'
+}
 
 $script:connectionTestCall = $null
 $connectionTestExecutor = {
@@ -105,8 +194,8 @@ foreach ($orderedCount in @(0, 500, 501)) {
 }
 
 Assert-Equal "SELECT Id FROM dbo.Items ORDER BY Id`r`nOFFSET @Offset ROWS FETCH NEXT @FetchCount ROWS ONLY" $script:orderedCall.CommandText 'Ordered paging appends OFFSET/FETCH exactly'
-Assert-Equal 500 $script:orderedCall.Parameters.Offset 'Ordered page two sends the correct offset'
-Assert-Equal 501 $script:orderedCall.Parameters.FetchCount 'Ordered paging probes one sentinel row'
+Assert-Equal 500 (Find-ParameterDescriptor $script:orderedCall.Parameters 'Offset').Value 'Ordered page two sends the correct offset'
+Assert-Equal 501 (Find-ParameterDescriptor $script:orderedCall.Parameters 'FetchCount').Value 'Ordered paging probes one sentinel row'
 Assert-Equal 120 $script:orderedCall.CommandTimeoutSeconds 'Ordered paging forwards the command timeout'
 Assert-Equal 501 $script:orderedCall.MaximumRows 'Ordered paging bounds the executor read'
 

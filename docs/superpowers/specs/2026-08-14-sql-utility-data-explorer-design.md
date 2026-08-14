@@ -40,6 +40,8 @@ Advanced cases remain in the Query tab. Send to Query is the supported transitio
 
 ### Tab layout
 
+The responsive pane hierarchy and scrollbar containment correction is owned by [SQL Utility Data Explorer Layout Correction Design](2026-08-14-sql-utility-data-explorer-layout-correction-design.md).
+
 Data Explorer is a new workspace tab beside Query and Settings. Its layout has:
 
 1. A left table pane with a table-name filter, Refresh action, and schema-qualified physical table names.

@@ -117,6 +117,12 @@ function New-SqlUtilityDefaultServices {
             param($State, $DestinationPath)
             Invoke-SqlUtilityExportWorkflow -State $State -DestinationPath $DestinationPath
         }
+        ExportPreview = {
+            param($DataTable, $DestinationPath, $TimeoutSeconds)
+            $rowSource = New-SqlUtilityDataTableRowSource -DataTable $DataTable
+            Export-SqlUtilityXlsx -DestinationPath $DestinationPath -RowSource $rowSource `
+                -TimeoutSeconds $TimeoutSeconds
+        }
         PromptSavePath = {
             $dialog = [System.Windows.Forms.SaveFileDialog]::new()
             try {
@@ -150,7 +156,7 @@ function Assert-SqlUtilityServices {
         'TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm', 'ValidateQuery',
         'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'BuildCountSql', 'ExecuteCount',
         'ExportResult', 'PromptSavePath', 'ListPhysicalTables', 'GetTableColumns',
-        'BuildDataExplorerQuery', 'ExecuteDataPreview'
+        'BuildDataExplorerQuery', 'ExecuteDataPreview', 'ExportPreview'
     )) {
         if (-not $Services.ContainsKey($serviceName) -or $Services[$serviceName] -isnot [scriptblock]) {
             throw [System.ArgumentException]::new("Services must contain a '$serviceName' scriptblock.")
@@ -238,6 +244,7 @@ function Set-SqlUtilityBusy {
         $statusLabel.Text = $Message
     }
     Update-SqlUtilityQueryActionState -Form $Form
+    Update-SqlUtilityDataExplorerActionState -Form $Form
     $Form.Refresh()
 }
 
@@ -539,11 +546,15 @@ function Clear-SqlUtilityDataExplorerFilterRows {
     $Form.Tag.DataExplorerBuilder.Filters=@()
 }
 
-function Update-SqlUtilityDataExplorerSendState {
+function Update-SqlUtilityDataExplorerActionState {
     param([System.Windows.Forms.Form]$Form)
-    $button=Get-SqlUtilityNamedControl $Form 'SendToQueryButton';$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
-    if($button){$button.Enabled=(-not $Form.Tag.IsBusy-and$null-ne$Form.Tag.DataExplorerBuilder.Table-and@($Form.Tag.DataExplorerBuilder.Columns).Count-gt 0-and$out.CheckedItems.Count-gt 0)}
+    $state=$Form.Tag;$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
+    $preview=Get-SqlUtilityNamedControl $Form 'PreviewButton';if($preview){$preview.Enabled=(-not $state.IsBusy-and$null-ne$state.DataExplorerBuilder.Table)}
+    $send=Get-SqlUtilityNamedControl $Form 'SendToQueryButton';if($send){$send.Enabled=(-not $state.IsBusy-and$null-ne$state.DataExplorerBuilder.Table-and@($state.DataExplorerBuilder.Columns).Count-gt 0-and$out.CheckedItems.Count-gt 0)}
+    $export=Get-SqlUtilityNamedControl $Form 'ExportPreviewButton';if($export){$export.Enabled=(-not $state.IsBusy-and$null-ne$state.DataExplorerPreview)}
 }
+
+function Update-SqlUtilityDataExplorerSendState { param([System.Windows.Forms.Form]$Form) Update-SqlUtilityDataExplorerActionState $Form }
 
 function Add-SqlUtilityDataExplorerFilterRow {
     param([System.Windows.Forms.Form]$Form,$Filter)
@@ -596,8 +607,22 @@ function Invoke-SqlUtilityDataExplorerPreview {
 function Set-SqlUtilityDataExplorerPreviewDisplay {
     param([System.Windows.Forms.Form]$Form,$Candidate)
     $state=$Form.Tag;$prior=$state.DataExplorerPreview;$grid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$source=Get-SqlUtilityNamedControl $Form 'PreviewSourceLabel';$status=Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel'
-    try{Set-SqlUtilityGridData $grid $Candidate.Data;$source.Text=$Candidate.SourceTable;$status.Text="$($Candidate.Data.Rows.Count) rows displayed (unordered)";$state.DataExplorerPreview=$Candidate}
+    try{Set-SqlUtilityGridData $grid $Candidate.Data;$source.Text=$Candidate.SourceTable;$status.Text="$($Candidate.Data.Rows.Count) rows displayed (unordered)";$state.DataExplorerPreview=$Candidate;Update-SqlUtilityDataExplorerActionState $Form}
     catch{if($prior){Set-SqlUtilityGridData $grid $prior.Data;$source.Text=$prior.SourceTable;$status.Text="$($prior.Data.Rows.Count) rows displayed (unordered)"}else{$grid.DataSource=$null;$grid.Columns.Clear();$source.Text='';$status.Text=''};$state.DataExplorerPreview=$prior;throw}
+}
+
+function Invoke-SqlUtilityDataExplorerExportPreview {
+    param([System.Windows.Forms.Form]$Form)
+    $state=$Form.Tag;if($state.IsBusy-or$null-eq$state.DataExplorerPreview){return}
+    $busyStarted=$false
+    try{
+        $prompt=$state.Services.PromptSavePath;$destination=&$prompt;if([string]::IsNullOrWhiteSpace([string]$destination)){return}
+        $snapshot=$state.DataExplorerPreview
+        Set-SqlUtilityBusy $Form $true 'Exporting preview...';$busyStarted=$true
+        $export=$state.Services.ExportPreview;&$export $snapshot.Data ([string]$destination) $state.Config.queryExportTimeoutSeconds
+        Show-SqlUtilityMessage $state ("Export Preview completed: {0} rows exported." -f $snapshot.Data.Rows.Count) 'Export Preview' 'Information'
+    }catch{Show-SqlUtilityMessage $state ("Export Preview failed.`r`n`r`n{0}" -f $_.Exception.Message) 'Export Preview Error' 'Error'}
+    finally{if($busyStarted){Set-SqlUtilityBusy $Form $false 'Ready.'}}
 }
 
 function Show-SqlUtilityPage {
@@ -837,6 +862,7 @@ function Reset-SqlUtilityWorkspaceState {
     (Get-SqlUtilityNamedControl $Form 'PreviewStatusLabel').Text=''
     (Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=$false
     (Get-SqlUtilityNamedControl $Form 'SendToQueryButton').Enabled=$false
+    (Get-SqlUtilityNamedControl $Form 'ExportPreviewButton').Enabled=$false
 
     foreach ($textBoxName in @('ServerTextBox', 'DatabaseTextBox', 'SqlEditor')) {
         $textBox = Get-SqlUtilityNamedControl -Root $Form -Name $textBoxName
@@ -858,7 +884,7 @@ function Invoke-SqlUtilityChangeConnection {
         return
     }
 
-    $message = 'Change connection? The current SQL text, results, page, and export state will be cleared.'
+    $message = 'Change connection? The current SQL text, results, page, export state, and Data Explorer catalog, builder, and preview will be cleared.'
     if (-not (Confirm-SqlUtilityAction -State $state -Text $message -Caption 'Change Connection')) {
         return
     }
@@ -1226,6 +1252,7 @@ function New-SqlUtilityMainForm {
     $all=[System.Windows.Forms.Button]::new();$all.Name='SelectAllColumnsButton';$all.Text='All';$all.Location='325,220';$dataExplorerTab.Controls.Add($all)
     $none=[System.Windows.Forms.Button]::new();$none.Name='SelectNoColumnsButton';$none.Text='None';$none.Location='405,220';$dataExplorerTab.Controls.Add($none)
     $preview=[System.Windows.Forms.Button]::new();$preview.Name='PreviewButton';$preview.Text='Preview';$preview.Location='485,220';$preview.Enabled=$false;$dataExplorerTab.Controls.Add($preview)
+    $exportPreview=[System.Windows.Forms.Button]::new();$exportPreview.Name='ExportPreviewButton';$exportPreview.Text='Export Preview';$exportPreview.Location='565,220';$exportPreview.Width=110;$exportPreview.Enabled=$false;$dataExplorerTab.Controls.Add($exportPreview)
     $addFilter=[System.Windows.Forms.Button]::new();$addFilter.Name='AddFilterButton';$addFilter.Text='Add Filter';$addFilter.Location='325,255';$dataExplorerTab.Controls.Add($addFilter)
     $clearFilters=[System.Windows.Forms.Button]::new();$clearFilters.Name='ClearFiltersButton';$clearFilters.Text='Clear';$clearFilters.Location='410,255';$dataExplorerTab.Controls.Add($clearFilters)
     $send=[System.Windows.Forms.Button]::new();$send.Name='SendToQueryButton';$send.Text='Send to Query';$send.Location='485,255';$send.Width=110;$send.Enabled=$false;$dataExplorerTab.Controls.Add($send)
@@ -1307,6 +1334,7 @@ function New-SqlUtilityMainForm {
     $all.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$true)};Update-SqlUtilityDataExplorerSendState $form}.GetNewClosure())
     $none.Add_Click({for($i=0;$i-lt$outputs.Items.Count;$i++){$outputs.SetItemChecked($i,$false)};Update-SqlUtilityDataExplorerSendState $form}.GetNewClosure())
     $preview.Add_Click({Invoke-SqlUtilityDataExplorerPreview $form}.GetNewClosure())
+    $exportPreview.Add_Click({Invoke-SqlUtilityDataExplorerExportPreview $form}.GetNewClosure())
     $addFilter.Add_Click({Add-SqlUtilityDataExplorerFilterRow $form}.GetNewClosure())
     $clearFilters.Add_Click({Clear-SqlUtilityDataExplorerFilterRows $form}.GetNewClosure())
     $send.Add_Click({Invoke-SqlUtilityDataExplorerSendToQuery $form}.GetNewClosure())

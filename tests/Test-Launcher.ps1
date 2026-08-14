@@ -147,6 +147,7 @@ exit 37
         GetTableColumns = { throw 'Unexpected GetTableColumns call during form construction.' }
         BuildDataExplorerQuery = { throw 'Unexpected BuildDataExplorerQuery call during form construction.' }
         ExecuteDataPreview = { throw 'Unexpected ExecuteDataPreview call during form construction.' }
+        ExportPreview = { throw 'Unexpected ExportPreview call during form construction.' }
     }
     $form = New-SqlUtilityMainForm -Config (New-SqlUtilityDefaultConfig) `
         -ConfigPath (Join-Path $projectRoot 'SqlUtility.config.json') -Services $services

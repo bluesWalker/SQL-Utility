@@ -29,6 +29,7 @@ function New-TestServices {
         ColumnCalls = [System.Collections.Generic.List[object]]::new()
         BuildExplorerCalls = [System.Collections.Generic.List[object]]::new()
         PreviewCalls = [System.Collections.Generic.List[object]]::new()
+        ExportPreviewCalls = [System.Collections.Generic.List[object]]::new()
         TablesResult = @(
             [pscustomobject]@{ ObjectId=1; SchemaName='dbo'; TableName='Orders'; DisplayName='[dbo].[Orders]' },
             [pscustomobject]@{ ObjectId=2; SchemaName='sales'; TableName='OrderHistory'; DisplayName='[sales].[OrderHistory]' },
@@ -44,6 +45,7 @@ function New-TestServices {
         TableError = $null
         ColumnError = $null
         PreviewError = $null
+        ExportPreviewError = $null
         BuildExplorerError = $null
         DialogCalls = 0
         TestError = $null
@@ -220,6 +222,11 @@ function New-TestServices {
             if ($recorder.PreviewError) { throw $recorder.PreviewError }
             return (, $recorder.PreviewResult)
         }.GetNewClosure()
+        ExportPreview = {
+            param($DataTable,$DestinationPath,$TimeoutSeconds)
+            [void] $recorder.ExportPreviewCalls.Add([pscustomobject]@{DataTable=$DataTable;DestinationPath=$DestinationPath;TimeoutSeconds=$TimeoutSeconds})
+            if ($recorder.ExportPreviewError) { throw $recorder.ExportPreviewError }
+        }.GetNewClosure()
         ShowDialog = {
             param($Form)
             $recorder.DialogCalls++
@@ -316,7 +323,7 @@ $requiredControlNames = @(
     'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
     'QuerySplitContainer', 'ResultsGrid', 'DataExplorerTab', 'TableFilterTextBox',
     'RefreshTablesButton', 'PhysicalTablesList', 'OutputColumnsList', 'SelectAllColumnsButton',
-    'SelectNoColumnsButton', 'PreviewButton', 'PreviewSourceLabel', 'PreviewStatusLabel',
+    'SelectNoColumnsButton', 'PreviewButton', 'ExportPreviewButton', 'PreviewSourceLabel', 'PreviewStatusLabel',
     'PreviewGrid', 'PreviewLimitNumeric'
 )
 
@@ -1226,6 +1233,14 @@ try {
     Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Unordered export workflow never opens SQL row stream'
     Assert-Equal 3 $script:queryCompositionRecorder.Exports[1].RowCount 'Unordered export workflow supplies every cached row'
     Assert-Equal 654 $script:queryCompositionRecorder.Exports[1].TimeoutSeconds 'Unordered export workflow forwards configured timeout to Excel'
+
+    $previewCache = New-TestDataTable -RowCount 4
+    $defaultServices = New-SqlUtilityDefaultServices
+    & $defaultServices.ExportPreview $previewCache 'C:\exports\composition-preview.xlsx' 777
+    Assert-Equal 4 $script:queryCompositionRecorder.Exports[2].RowCount 'Preview export service supplies every cached preview row'
+    Assert-Equal 777 $script:queryCompositionRecorder.Exports[2].TimeoutSeconds 'Preview export service forwards configured timeout to Excel'
+    Assert-Equal 'C:\exports\composition-preview.xlsx' $script:queryCompositionRecorder.Exports[2].DestinationPath 'Preview export service forwards selected destination'
+    Assert-Equal 1 $script:queryCompositionRecorder.OrderedCalls.Count 'Preview export service never opens a SQL row stream'
 }
 finally {
     Set-Item -Path Function:\Invoke-SqlUtilityOrderedRowStream -Value $originalOrderedRowStream
@@ -1481,6 +1496,66 @@ try {
     Assert-Equal '' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Connection reset clears preview status'
 }
 finally { $explorerForm.Dispose() }
+
+# Export Preview always uses the exact successful displayed snapshot and never reruns SQL.
+$previewExportHarness = New-TestServices
+$previewA = New-TestDataTable -RowCount 2
+$previewExportHarness.Recorder.PreviewResult = $previewA
+$previewExportHarness.Recorder.PromptPath = 'C:\exports\preview.xlsx'
+$previewExportForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $previewExportHarness.Services
+try {
+    Show-TestForm $previewExportForm; Enter-TestWorkspace $previewExportForm
+    (Get-TestControl $previewExportForm 'WorkspaceTabs').SelectedTab=Get-TestControl $previewExportForm 'DataExplorerTab';[System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=0
+    Assert-Equal $true (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Selected table enables Preview before metadata exists'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'SendToQueryButton').Enabled 'Send remains disabled before metadata exists'
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    $snapshotA=$previewExportForm.Tag.DataExplorerPreview;$sourceA=(Get-TestControl $previewExportForm 'PreviewSourceLabel').Text
+    $exportPreviewButton=Get-TestControl $previewExportForm 'ExportPreviewButton'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Successful Preview enables Export Preview'
+    (Get-TestControl $previewExportForm 'OutputColumnsList').SetItemChecked(0,$false)
+    (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=1
+    (Get-TestControl $previewExportForm 'PreviewLimitNumeric').Value=222
+    Assert-True ([object]::ReferenceEquals($snapshotA,$previewExportForm.Tag.DataExplorerPreview)) 'Builder table columns and settings changes preserve snapshot'
+    Assert-True ([object]::ReferenceEquals($previewA,(Get-TestControl $previewExportForm 'PreviewGrid').DataSource)) 'Builder changes preserve displayed preview data'
+    Assert-Equal $sourceA (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Builder changes preserve preview source label'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Builder changes keep Export Preview enabled'
+    $previewCallsBeforeExport=$previewExportHarness.Recorder.PreviewCalls.Count
+    $exportPreviewButton.PerformClick()
+    Assert-Equal 1 $previewExportHarness.Recorder.ExportPreviewCalls.Count 'Export Preview calls exporter once'
+    Assert-True ([object]::ReferenceEquals($previewA,$previewExportHarness.Recorder.ExportPreviewCalls[0].DataTable)) 'Export Preview passes exact displayed DataTable'
+    Assert-Equal $previewCallsBeforeExport $previewExportHarness.Recorder.PreviewCalls.Count 'Export Preview performs no additional SQL'
+    Assert-Equal 120 $previewExportHarness.Recorder.ExportPreviewCalls[0].TimeoutSeconds 'Export Preview forwards active timeout'
+    Assert-True ($previewExportHarness.Recorder.Messages[-1].Text -like '*2 rows*') 'Export Preview success reports exported row count'
+    $previewB=New-TestDataTable -RowCount 3;$previewExportHarness.Recorder.PreviewResult=$previewB
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($previewB,$previewExportForm.Tag.DataExplorerPreview.Data)) 'Later successful Preview replaces snapshot'
+    $snapshotB=$previewExportForm.Tag.DataExplorerPreview;$previewExportHarness.Recorder.PreviewError='preview failed'
+    (Get-TestControl $previewExportForm 'PreviewButton').PerformClick()
+    Assert-True ([object]::ReferenceEquals($snapshotB,$previewExportForm.Tag.DataExplorerPreview)) 'Failed Preview preserves last successful snapshot'
+    $previewExportHarness.Recorder.PreviewError=$null;$previewExportHarness.Recorder.PromptPath=$null
+    $exportCallsBeforeCancel=$previewExportHarness.Recorder.ExportPreviewCalls.Count;$exportPreviewButton.PerformClick()
+    Assert-Equal $exportCallsBeforeCancel $previewExportHarness.Recorder.ExportPreviewCalls.Count 'Canceled Export Preview prompt does not call exporter'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Canceled Export Preview preserves action state'
+    $previewExportHarness.Recorder.PromptPath='C:\exports\preview.xlsx';$previewExportHarness.Recorder.ExportPreviewError='export failed';$exportPreviewButton.PerformClick()
+    Assert-True ([object]::ReferenceEquals($snapshotB,$previewExportForm.Tag.DataExplorerPreview)) 'Failed Export Preview preserves snapshot'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Failed Export Preview restores action state'
+    Set-SqlUtilityBusy $previewExportForm $true 'Working...'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Busy state disables Preview'
+    Assert-Equal $false (Get-TestControl $previewExportForm 'SendToQueryButton').Enabled 'Busy state disables Send'
+    Assert-Equal $false $exportPreviewButton.Enabled 'Busy state disables Export Preview'
+    Set-SqlUtilityBusy $previewExportForm $false 'Ready.'
+    Assert-Equal $true (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Ready state restores Preview for selected table'
+    Assert-Equal $true $exportPreviewButton.Enabled 'Ready state restores Export Preview for snapshot'
+    $previewExportHarness.Recorder.ConfirmResult=$true
+    (Get-TestControl $previewExportForm 'ChangeConnectionButton').PerformClick()
+    Assert-True ($previewExportHarness.Recorder.ConfirmCalls[-1].Text -like '*Data Explorer*') 'Change Connection confirmation names Explorer state loss'
+    Assert-True ($null -eq $previewExportForm.Tag.DataExplorerPreview) 'Confirmed Change Connection clears preview snapshot'
+    Assert-Equal $false $exportPreviewButton.Enabled 'Confirmed Change Connection disables Export Preview'
+    Assert-True ($null -eq (Get-TestControl $previewExportForm 'PreviewGrid').DataSource) 'Confirmed Change Connection clears preview grid'
+    Assert-Equal '' (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Confirmed Change Connection clears preview source label'
+}
+finally { $previewExportForm.Dispose() }
 
 # Bit filters use a constrained Boolean selector and emit its neutral label.
 $bitHarness = New-TestServices

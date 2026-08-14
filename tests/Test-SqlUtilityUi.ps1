@@ -602,6 +602,7 @@ $settingsHarness = New-TestServices
 $settingsForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $settingsHarness.Services
 try {
     Show-TestForm $settingsForm
+    $settingsForm.Tag.Config.previewRowLimit = 250
     $unorderedNumeric = Get-TestControl $settingsForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
@@ -614,12 +615,14 @@ try {
     $saveSettings.PerformClick()
     Assert-Equal 1000 $settingsForm.Tag.Config.unorderedRowLimit 'Failed settings write keeps active row limit'
     Assert-Equal 120 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Failed settings write keeps active timeout'
+    Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Failed settings write keeps active preview limit'
     Assert-Equal $false $settingsForm.Tag.IsBusy 'Settings exception restores busy state'
 
     $settingsHarness.Recorder.WriteError = $null
     $saveSettings.PerformClick()
     Assert-Equal 1500 $settingsForm.Tag.Config.unorderedRowLimit 'Successful settings write enters row limit state'
     Assert-Equal 300 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Successful settings write enters timeout state'
+    Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Successful settings write preserves preview limit'
 }
 finally {
     $settingsForm.Close()
@@ -1242,7 +1245,7 @@ try {
     Assert-Equal 1000 $recovered.unorderedRowLimit 'Confirmed reset writes default configuration'
 
     $futurePath = Join-Path $startupRoot 'future.json'
-    $futureText = '{"schemaVersion":2,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
+    $futureText = '{"schemaVersion":3,"previewRowLimit":100,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
     $futureBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($futureText)
     [System.IO.File]::WriteAllBytes($futurePath, $futureBytes)
     $futureHarness = New-TestServices

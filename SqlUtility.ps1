@@ -382,6 +382,7 @@ function Invoke-SqlUtilitySaveSettings {
         $timeoutNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'QueryExportTimeoutNumeric'
         $candidate = ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
             schemaVersion = $state.Config.schemaVersion
+            previewRowLimit = $state.Config.previewRowLimit
             unorderedRowLimit = [int] $unorderedNumeric.Value
             queryExportTimeoutSeconds = [int] $timeoutNumeric.Value
             connections = @($state.Config.connections)

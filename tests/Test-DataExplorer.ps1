@@ -125,4 +125,50 @@ foreach ($invalid in @(
     Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns $invalidColumns -SelectedColumnNames @($invalid.Column) -Filters @([pscustomobject]@{ ColumnName=$invalid.Column; Operator=$invalid.Operator; ValueText=$invalid.Value }) -PreviewRowLimit 100 } 'System.ArgumentException' "$($invalid.Name) is rejected"
 }
 
+# Each expected predicate, literal, and value below is hand-derived from the public SQL contract.
+foreach ($case in @(
+    @{ Name='char equals'; Type='char'; MaxLength=12; Precision=0; Scale=0; Operator='Equals'; Value='AB'; Preview='[Value] = @Filter1'; Editor="[Value] = 'AB'"; Clr=[string]'AB'; DbType=[System.Data.SqlDbType]::Char; Size=12 },
+    @{ Name='varchar not equals'; Type='varchar'; MaxLength=12; Precision=0; Scale=0; Operator='NotEquals'; Value='AB'; Preview='[Value] <> @Filter1'; Editor="[Value] <> 'AB'"; Clr=[string]'AB'; DbType=[System.Data.SqlDbType]::VarChar; Size=12 },
+    @{ Name='nchar contains'; Type='nchar'; MaxLength=12; Precision=0; Scale=0; Operator='Contains'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'%AB%'"; Clr=[string]'%AB%'; DbType=[System.Data.SqlDbType]::NChar; Size=6 },
+    @{ Name='nvarchar starts with'; Type='nvarchar'; MaxLength=12; Precision=0; Scale=0; Operator='StartsWith'; Value='AB'; Preview='[Value] LIKE @Filter1'; Editor="[Value] LIKE N'AB%'"; Clr=[string]'AB%'; DbType=[System.Data.SqlDbType]::NVarChar; Size=6 },
+    @{ Name='tinyint greater than'; Type='tinyint'; MaxLength=1; Precision=0; Scale=0; Operator='GreaterThan'; Value='7'; Preview='[Value] > @Filter1'; Editor='[Value] > 7'; Clr=[byte]7; DbType=[System.Data.SqlDbType]::TinyInt; Size=0 },
+    @{ Name='smallint greater than or equal'; Type='smallint'; MaxLength=2; Precision=0; Scale=0; Operator='GreaterThanOrEqual'; Value='7'; Preview='[Value] >= @Filter1'; Editor='[Value] >= 7'; Clr=[int16]7; DbType=[System.Data.SqlDbType]::SmallInt; Size=0 },
+    @{ Name='int less than'; Type='int'; MaxLength=4; Precision=0; Scale=0; Operator='LessThan'; Value='7'; Preview='[Value] < @Filter1'; Editor='[Value] < 7'; Clr=[int]7; DbType=[System.Data.SqlDbType]::Int; Size=0 },
+    @{ Name='bigint less than or equal'; Type='bigint'; MaxLength=8; Precision=0; Scale=0; Operator='LessThanOrEqual'; Value='7'; Preview='[Value] <= @Filter1'; Editor='[Value] <= 7'; Clr=[int64]7; DbType=[System.Data.SqlDbType]::BigInt; Size=0 },
+    @{ Name='decimal equals'; Type='decimal'; MaxLength=9; Precision=9; Scale=2; Operator='Equals'; Value='1.25'; Preview='[Value] = @Filter1'; Editor='[Value] = 1.25'; Clr=[decimal]1.25; DbType=[System.Data.SqlDbType]::Decimal; Size=0 },
+    @{ Name='numeric not equals'; Type='numeric'; MaxLength=9; Precision=9; Scale=2; Operator='NotEquals'; Value='1.25'; Preview='[Value] <> @Filter1'; Editor='[Value] <> 1.25'; Clr=[decimal]1.25; DbType=[System.Data.SqlDbType]::Decimal; Size=0 },
+    @{ Name='smallmoney greater than'; Type='smallmoney'; MaxLength=4; Precision=0; Scale=0; Operator='GreaterThan'; Value='1.25'; Preview='[Value] > @Filter1'; Editor='[Value] > 1.25'; Clr=[decimal]1.25; DbType=[System.Data.SqlDbType]::SmallMoney; Size=0 },
+    @{ Name='money less than'; Type='money'; MaxLength=8; Precision=0; Scale=0; Operator='LessThan'; Value='1.25'; Preview='[Value] < @Filter1'; Editor='[Value] < 1.25'; Clr=[decimal]1.25; DbType=[System.Data.SqlDbType]::Money; Size=0 },
+    @{ Name='real greater than or equal'; Type='real'; MaxLength=4; Precision=0; Scale=0; Operator='GreaterThanOrEqual'; Value='1.5'; Preview='[Value] >= @Filter1'; Editor='[Value] >= 1.5'; Clr=[single]1.5; DbType=[System.Data.SqlDbType]::Real; Size=0 },
+    @{ Name='float less than or equal'; Type='float'; MaxLength=8; Precision=0; Scale=0; Operator='LessThanOrEqual'; Value='1.5'; Preview='[Value] <= @Filter1'; Editor='[Value] <= 1.5'; Clr=[double]1.5; DbType=[System.Data.SqlDbType]::Float; Size=0 },
+    @{ Name='date equals'; Type='date'; MaxLength=3; Precision=0; Scale=0; Operator='Equals'; Value='2026-01-02'; Preview='[Value] = @Filter1'; Editor="[Value] = '2026-01-02'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::Date; Size=0 },
+    @{ Name='smalldatetime not equals'; Type='smalldatetime'; MaxLength=4; Precision=0; Scale=0; Operator='NotEquals'; Value='2026-01-02T03:04:05'; Preview='[Value] <> @Filter1'; Editor="[Value] <> '2026-01-02T03:04:05.000'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::SmallDateTime; Size=0 },
+    @{ Name='datetime greater than'; Type='datetime'; MaxLength=8; Precision=0; Scale=0; Operator='GreaterThan'; Value='2026-01-02T03:04:05'; Preview='[Value] > @Filter1'; Editor="[Value] > '2026-01-02T03:04:05.000'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::DateTime; Size=0 },
+    @{ Name='datetime2 less than'; Type='datetime2'; MaxLength=8; Precision=0; Scale=3; Operator='LessThan'; Value='2026-01-02T03:04:05.123'; Preview='[Value] < @Filter1'; Editor="[Value] < '2026-01-02T03:04:05.123'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::DateTime2; Size=0 },
+    @{ Name='time greater than or equal'; Type='time'; MaxLength=5; Precision=0; Scale=3; Operator='GreaterThanOrEqual'; Value='03:04:05.123'; Preview='[Value] >= @Filter1'; Editor="[Value] >= '03:04:05.1230000'"; ClrType=[timespan]; DbType=[System.Data.SqlDbType]::Time; Size=0 },
+    @{ Name='datetimeoffset less than or equal'; Type='datetimeoffset'; MaxLength=10; Precision=0; Scale=3; Operator='LessThanOrEqual'; Value='2026-01-02T03:04:05+08:00'; Preview='[Value] <= @Filter1'; Editor="[Value] <= '2026-01-02T03:04:05.0000000+08:00'"; ClrType=[datetimeoffset]; DbType=[System.Data.SqlDbType]::DateTimeOffset; Size=0 },
+    @{ Name='bit equals'; Type='bit'; MaxLength=1; Precision=0; Scale=0; Operator='Equals'; Value='true'; Preview='[Value] = @Filter1'; Editor='[Value] = 1'; Clr=$true; DbType=[System.Data.SqlDbType]::Bit; Size=0 },
+    @{ Name='uniqueidentifier not equals'; Type='uniqueidentifier'; MaxLength=16; Precision=0; Scale=0; Operator='NotEquals'; Value='01234567-89ab-cdef-0123-456789abcdef'; Preview='[Value] <> @Filter1'; Editor="[Value] <> '01234567-89ab-cdef-0123-456789abcdef'"; ClrType=[guid]; DbType=[System.Data.SqlDbType]::UniqueIdentifier; Size=0 }
+)) {
+    $semanticColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName=$case.Type; MaxLength=$case.MaxLength; Precision=$case.Precision; Scale=$case.Scale; IsNullable=$true; IsUserDefined=$false }
+    $semanticQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($semanticColumn) -SelectedColumnNames @('Value') -Filters @([pscustomobject]@{ ColumnName='Value'; Operator=$case.Operator; ValueText=$case.Value }) -PreviewRowLimit 100
+    Assert-Equal "SELECT TOP (@PreviewLimit) [Value] FROM [odd]]schema].[Order Table] WHERE $($case.Preview);" $semanticQuery.PreviewSql "$($case.Name) preview predicate is exact"
+    Assert-Equal "SELECT [Value] FROM [odd]]schema].[Order Table] WHERE $($case.Editor);" $semanticQuery.EditorSql "$($case.Name) invariant editor literal is exact"
+    Assert-Equal $case.DbType $semanticQuery.PreviewParameters[1].SqlDbType "$($case.Name) parameter type is exact"
+    Assert-Equal $case.Size $semanticQuery.PreviewParameters[1].Size "$($case.Name) parameter size is exact"
+    Assert-Equal $case.Precision $semanticQuery.PreviewParameters[1].Precision "$($case.Name) parameter precision is exact"
+    Assert-Equal $case.Scale $semanticQuery.PreviewParameters[1].Scale "$($case.Name) parameter scale is exact"
+    if ($case.ContainsKey('Clr')) { Assert-Equal $case.Clr $semanticQuery.PreviewParameters[1].Value "$($case.Name) CLR parameter value is exact" }
+    else { Assert-True ($semanticQuery.PreviewParameters[1].Value -is $case.ClrType) "$($case.Name) CLR parameter value type is exact" }
+}
+$nullableValue = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+foreach ($nullOperator in @('IsNull','IsNotNull')) {
+    $nullableQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($nullableValue) -SelectedColumnNames @('Value') -Filters @([pscustomobject]@{ ColumnName='Value'; Operator=$nullOperator; ValueText='ignored' }) -PreviewRowLimit 100
+    $nullPredicate = if ($nullOperator -eq 'IsNull') { '[Value] IS NULL' } else { '[Value] IS NOT NULL' }
+    Assert-True ($nullableQuery.PreviewSql -match [regex]::Escape($nullPredicate)) "$nullOperator is available for nullable concrete types"
+    Assert-Equal 1 $nullableQuery.PreviewParameters.Count "$nullOperator creates no value parameter"
+}
+$integerColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns @($integerColumn) -SelectedColumnNames @('Value') -Filters @([pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.2' }) -PreviewRowLimit 100 } 'System.ArgumentException' 'Integer column rejects lossy decimal text'
+
 Complete-TestFile 'All Data Explorer tests passed.'

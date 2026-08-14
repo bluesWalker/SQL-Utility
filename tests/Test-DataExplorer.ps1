@@ -105,6 +105,44 @@ Assert-Throws {
     ) -PreviewRowLimit 100
 } 'System.ArgumentException' 'Datetime2 rejects fractional seconds beyond catalog scale'
 
+$sqlDateTimeColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='datetime'; MaxLength=8; Precision=0; Scale=3; IsNullable=$false; IsUserDefined=$false }
+$sqlDateTimeQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($sqlDateTimeColumn) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='2026-01-02T03:04:05.0019' }
+) -PreviewRowLimit 100
+$sqlDateTimeInput = [datetime]::new(2026, 1, 2, 3, 4, 5).AddTicks(19000)
+$sqlDateTimeExpected = [System.Data.SqlTypes.SqlDateTime]::new($sqlDateTimeInput).Value
+Assert-Equal $sqlDateTimeExpected $sqlDateTimeQuery.PreviewParameters[1].Value 'Datetime parameter uses the SQL datetime representable value'
+Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [Value] = '2026-01-02T03:04:05.003';" $sqlDateTimeQuery.EditorSql 'Datetime editor literal uses the same SQL datetime value'
+
+$smallDateTimeColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='smalldatetime'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+$smallDateTimeBoundary = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($smallDateTimeColumn) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='2079-06-06T23:59:00' }
+) -PreviewRowLimit 100
+Assert-Equal ([datetime]::new(2079, 6, 6, 23, 59, 0)) $smallDateTimeBoundary.PreviewParameters[1].Value 'Smalldatetime accepts its exact upper minute boundary'
+Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [Value] = '2079-06-06T23:59:00.000';" $smallDateTimeBoundary.EditorSql 'Smalldatetime boundary parameter and editor literal are identical'
+foreach ($invalidSmallDateTime in @('2026-01-02T03:04:05', '2080-01-01T00:00:00')) {
+    Assert-Throws {
+        New-SqlUtilityDataExplorerQuery -Table $table -Columns @($smallDateTimeColumn) -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$invalidSmallDateTime }
+        ) -PreviewRowLimit 100
+    } 'System.ArgumentException' "Smalldatetime rejects non-representable value $invalidSmallDateTime"
+}
+
+$timeBoundaryColumn = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='time'; MaxLength=5; Precision=0; Scale=7; IsNullable=$false; IsUserDefined=$false }
+$timeBoundaryQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($timeBoundaryColumn) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='23:59:59.9999999' }
+) -PreviewRowLimit 100
+$timeBoundaryExpected = [timespan]::new(0, 23, 59, 59).Add([timespan]::FromTicks(9999999))
+Assert-Equal $timeBoundaryExpected $timeBoundaryQuery.PreviewParameters[1].Value 'Time accepts the last tick before one day'
+Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [Value] = '23:59:59.9999999';" $timeBoundaryQuery.EditorSql 'Time boundary parameter and editor literal are identical'
+foreach ($invalidTime in @('-03:04:05', '1.03:04:05')) {
+    Assert-Throws {
+        New-SqlUtilityDataExplorerQuery -Table $table -Columns @($timeBoundaryColumn) -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$invalidTime }
+        ) -PreviewRowLimit 100
+    } 'System.ArgumentException' "Time rejects out-of-domain value $invalidTime"
+}
+
 foreach ($invalidLimit in @('100', 10.5)) {
     Assert-Throws { New-SqlUtilityDataExplorerQuery -Table $table -Columns $columns -SelectedColumnNames @('PlantID') -Filters @() -PreviewRowLimit $invalidLimit } 'System.ArgumentException' "Non-integral CLR preview limit $invalidLimit is rejected"
 }
@@ -147,7 +185,7 @@ foreach ($case in @(
     @{ Name='real greater than or equal'; Type='real'; MaxLength=4; Precision=0; Scale=0; Operator='GreaterThanOrEqual'; Value='1.5'; Preview='[Value] >= @Filter1'; Editor='[Value] >= 1.5'; Clr=[single]1.5; DbType=[System.Data.SqlDbType]::Real; Size=0 },
     @{ Name='float less than or equal'; Type='float'; MaxLength=8; Precision=0; Scale=0; Operator='LessThanOrEqual'; Value='1.5'; Preview='[Value] <= @Filter1'; Editor='[Value] <= 1.5'; Clr=[double]1.5; DbType=[System.Data.SqlDbType]::Float; Size=0 },
     @{ Name='date equals'; Type='date'; MaxLength=3; Precision=0; Scale=0; Operator='Equals'; Value='2026-01-02'; Preview='[Value] = @Filter1'; Editor="[Value] = '2026-01-02'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::Date; Size=0 },
-    @{ Name='smalldatetime not equals'; Type='smalldatetime'; MaxLength=4; Precision=0; Scale=0; Operator='NotEquals'; Value='2026-01-02T03:04:05'; Preview='[Value] <> @Filter1'; Editor="[Value] <> '2026-01-02T03:04:05.000'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::SmallDateTime; Size=0 },
+    @{ Name='smalldatetime not equals'; Type='smalldatetime'; MaxLength=4; Precision=0; Scale=0; Operator='NotEquals'; Value='2026-01-02T03:04:00'; Preview='[Value] <> @Filter1'; Editor="[Value] <> '2026-01-02T03:04:00.000'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::SmallDateTime; Size=0 },
     @{ Name='datetime greater than'; Type='datetime'; MaxLength=8; Precision=0; Scale=0; Operator='GreaterThan'; Value='2026-01-02T03:04:05'; Preview='[Value] > @Filter1'; Editor="[Value] > '2026-01-02T03:04:05.000'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::DateTime; Size=0 },
     @{ Name='datetime2 less than'; Type='datetime2'; MaxLength=8; Precision=0; Scale=3; Operator='LessThan'; Value='2026-01-02T03:04:05.123'; Preview='[Value] < @Filter1'; Editor="[Value] < '2026-01-02T03:04:05.123'"; ClrType=[datetime]; DbType=[System.Data.SqlDbType]::DateTime2; Size=0 },
     @{ Name='time greater than or equal'; Type='time'; MaxLength=5; Precision=0; Scale=3; Operator='GreaterThanOrEqual'; Value='03:04:05.123'; Preview='[Value] >= @Filter1'; Editor="[Value] >= '03:04:05.1230000'"; ClrType=[timespan]; DbType=[System.Data.SqlDbType]::Time; Size=0 },
@@ -206,6 +244,50 @@ try {
     ) -PreviewRowLimit 100
     Assert-Equal ([datetime]::new(2026, 2, 1)) $cultureDateQuery.PreviewParameters[1].Value 'Ambiguous slash date follows the active en-GB culture'
     Assert-True ($cultureDateQuery.EditorSql -match "\[Value\] = '2026-02-01'") 'Culture-parsed date renders the same invariant editor value'
+}
+finally {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $priorCulture
+}
+
+$precision38Integer = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='decimal'; MaxLength=17; Precision=38; Scale=0; IsNullable=$false; IsUserDefined=$false }
+foreach ($precision38Value in @(
+    '99999999999999999999999999999999999999',
+    '-99999999999999999999999999999999999999'
+)) {
+    $precision38Query = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Integer) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$precision38Value }
+    ) -PreviewRowLimit 100
+    Assert-True ($precision38Query.PreviewParameters[1].Value -is [System.Data.SqlTypes.SqlDecimal]) "Precision 38 value $precision38Value uses SqlDecimal"
+    Assert-Equal $precision38Value $precision38Query.PreviewParameters[1].Value.ToString() "Precision 38 value $precision38Value is parameterized exactly"
+    Assert-Equal "SELECT [Value]`r`nFROM [odd]]schema].[Order Table]`r`nWHERE [Value] = $precision38Value;" $precision38Query.EditorSql "Precision 38 value $precision38Value renders identically"
+    Assert-True (Test-SqlUtilityQuery -Sql $precision38Query.EditorSql).IsValid "Precision 38 value $precision38Value remains QueryPolicy-compatible"
+}
+
+$precision38Scaled = [pscustomobject]@{ Name='Value'; Ordinal=1; SqlTypeName='numeric'; MaxLength=17; Precision=38; Scale=2; IsNullable=$false; IsUserDefined=$false }
+$precision38BoundaryText = '999999999999999999999999999999999999.99'
+$precision38BoundaryQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Scaled) -SelectedColumnNames @('Value') -Filters @(
+    [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$precision38BoundaryText }
+) -PreviewRowLimit 100
+Assert-Equal $precision38BoundaryText $precision38BoundaryQuery.PreviewParameters[1].Value.ToString() 'Precision 38 scaled boundary is parameterized exactly'
+Assert-Equal 38 $precision38BoundaryQuery.PreviewParameters[1].Precision 'Precision 38 scaled boundary keeps the parameter precision facet'
+Assert-Equal 2 $precision38BoundaryQuery.PreviewParameters[1].Scale 'Precision 38 scaled boundary keeps the parameter scale facet'
+Assert-True ($precision38BoundaryQuery.EditorSql -match ([regex]::Escape("[Value] = $precision38BoundaryText;"))) 'Precision 38 scaled boundary renders exactly'
+Assert-Throws {
+    New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Integer) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='100000000000000000000000000000000000000' }
+    ) -PreviewRowLimit 100
+} 'System.ArgumentException' 'Precision 38 rejects a 39-digit value'
+
+$priorCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('de-DE')
+    $culturePrecision38Text = '123456789012345678901234567890123456,78'
+    $culturePrecision38Query = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Scaled) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$culturePrecision38Text }
+    ) -PreviewRowLimit 100
+    $culturePrecision38Invariant = '123456789012345678901234567890123456.78'
+    Assert-Equal $culturePrecision38Invariant $culturePrecision38Query.PreviewParameters[1].Value.ToString() 'Precision 38 accepts current-culture decimal input exactly'
+    Assert-True ($culturePrecision38Query.EditorSql -match ([regex]::Escape("[Value] = $culturePrecision38Invariant;"))) 'Current-culture precision 38 parameter and editor literal are identical'
 }
 finally {
     [System.Threading.Thread]::CurrentThread.CurrentCulture = $priorCulture

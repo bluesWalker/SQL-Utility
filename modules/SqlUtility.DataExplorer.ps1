@@ -82,6 +82,57 @@ function Get-SqlUtilityDataExplorerColumnDisplayText {
     return "$($Column.Name) ($displayType)"
 }
 
+function ConvertTo-SqlUtilityDataExplorerInvariantNumberText {
+    param(
+        [Parameter(Mandatory = $true)][string] $ValueText,
+        [Parameter(Mandatory = $true)][System.Globalization.CultureInfo] $Culture
+    )
+
+    $text = $ValueText.Trim()
+    $numberFormat = $Culture.NumberFormat
+    $isNegative = $false
+    $hasSign = $false
+    foreach ($signDefinition in @(
+        [pscustomobject]@{ Text=[string] $numberFormat.NegativeSign; IsNegative=$true },
+        [pscustomobject]@{ Text=[string] $numberFormat.PositiveSign; IsNegative=$false }
+    )) {
+        if ([string]::IsNullOrEmpty($signDefinition.Text)) { continue }
+        if ($text.StartsWith($signDefinition.Text, [System.StringComparison]::Ordinal)) {
+            if ($hasSign) { throw [System.FormatException]::new('Numeric value contains multiple signs.') }
+            $hasSign = $true
+            $isNegative = [bool] $signDefinition.IsNegative
+            $text = $text.Substring($signDefinition.Text.Length)
+        }
+        elseif ($text.EndsWith($signDefinition.Text, [System.StringComparison]::Ordinal)) {
+            if ($hasSign) { throw [System.FormatException]::new('Numeric value contains multiple signs.') }
+            $hasSign = $true
+            $isNegative = [bool] $signDefinition.IsNegative
+            $text = $text.Substring(0, $text.Length - $signDefinition.Text.Length)
+        }
+    }
+
+    $groupSeparator = [string] $numberFormat.NumberGroupSeparator
+    if (-not [string]::IsNullOrEmpty($groupSeparator)) {
+        $text = $text.Replace($groupSeparator, '')
+    }
+    $decimalSeparator = [string] $numberFormat.NumberDecimalSeparator
+    if (-not [string]::IsNullOrEmpty($decimalSeparator)) {
+        $firstDecimal = $text.IndexOf($decimalSeparator, [System.StringComparison]::Ordinal)
+        if ($firstDecimal -ge 0 -and $firstDecimal -ne $text.LastIndexOf($decimalSeparator, [System.StringComparison]::Ordinal)) {
+            throw [System.FormatException]::new('Numeric value contains multiple decimal separators.')
+        }
+        $text = $text.Replace($decimalSeparator, '.')
+    }
+
+    if ($text -notmatch '^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$') {
+        throw [System.FormatException]::new('Numeric value is not valid for the current culture.')
+    }
+    if ($text.StartsWith('.', [System.StringComparison]::Ordinal)) { $text = '0' + $text }
+    if ($text.EndsWith('.', [System.StringComparison]::Ordinal)) { $text = $text.Substring(0, $text.Length - 1) }
+    if ($isNegative) { $text = '-' + $text }
+    return $text
+}
+
 function ConvertTo-SqlUtilityDataExplorerTypedValue {
     param([Parameter(Mandatory = $true)][object] $Column, [Parameter(Mandatory = $true)][string] $ValueText)
     $type = Get-SqlUtilityDataExplorerColumnType $Column
@@ -93,7 +144,11 @@ function ConvertTo-SqlUtilityDataExplorerTypedValue {
             'smallint' { return [int16]::Parse($ValueText, [System.Globalization.NumberStyles]::Integer, $culture) }
             'int' { return [int]::Parse($ValueText, [System.Globalization.NumberStyles]::Integer, $culture) }
             'bigint' { return [int64]::Parse($ValueText, [System.Globalization.NumberStyles]::Integer, $culture) }
-            { $_ -in @('decimal', 'numeric', 'smallmoney', 'money') } { return [decimal]::Parse($ValueText, [System.Globalization.NumberStyles]::Number, $culture) }
+            { $_ -in @('decimal', 'numeric') } {
+                $invariantText = ConvertTo-SqlUtilityDataExplorerInvariantNumberText -ValueText $ValueText -Culture $culture
+                return [System.Data.SqlTypes.SqlDecimal]::Parse($invariantText)
+            }
+            { $_ -in @('smallmoney', 'money') } { return [decimal]::Parse($ValueText, [System.Globalization.NumberStyles]::Number, $culture) }
             'real' { $value = [single]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([single]::IsNaN($value) -or [single]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
             'float' { $value = [double]::Parse($ValueText, [System.Globalization.NumberStyles]::Float, $culture); if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { throw 'Non-finite value.' }; return $value }
             { $_ -in @('date', 'smalldatetime', 'datetime', 'datetime2') } {
@@ -152,28 +207,50 @@ function ConvertTo-SqlUtilityDataExplorerMetadataValue {
             throw [System.ArgumentException]::new('Decimal column precision and scale metadata is invalid.')
         }
 
-        $normalized = [decimal]::Round([decimal] $Value, $scale, [System.MidpointRounding]::ToEven)
-        if ($normalized -ne [decimal] $Value) {
+        try {
+            $normalized = [System.Data.SqlTypes.SqlDecimal]::ConvertToPrecScale(
+                [System.Data.SqlTypes.SqlDecimal] $Value,
+                $precision,
+                $scale
+            )
+        }
+        catch {
+            throw [System.ArgumentException]::new("Invalid $type value: digits exceed precision $precision or scale $scale.", $_.Exception)
+        }
+        $valuesEqual = [System.Data.SqlTypes.SqlDecimal]::Equals([System.Data.SqlTypes.SqlDecimal] $Value, $normalized)
+        if (-not $valuesEqual.Value) {
             throw [System.ArgumentException]::new("Invalid $type value: fractional digits exceed scale $scale.")
         }
-
-        $integralDigits = $precision - $scale
-        if ($integralDigits -lt 29) {
-            $exclusiveLimit = [decimal] 1
-            for ($index = 0; $index -lt $integralDigits; $index++) {
-                $exclusiveLimit *= [decimal] 10
-            }
-            if ([Math]::Abs([decimal] $normalized) -ge $exclusiveLimit) {
-                throw [System.ArgumentException]::new("Invalid $type value: digits exceed precision $precision.")
-            }
-        }
         return $normalized
+    }
+
+    if ($type -eq 'datetime') {
+        try {
+            return [System.Data.SqlTypes.SqlDateTime]::new([datetime] $Value).Value
+        }
+        catch {
+            throw [System.ArgumentException]::new('Invalid datetime value for SQL Server.', $_.Exception)
+        }
+    }
+
+    if ($type -eq 'smalldatetime') {
+        $smallDateTimeMinimum = [datetime]::new(1900, 1, 1, 0, 0, 0)
+        $smallDateTimeMaximum = [datetime]::new(2079, 6, 6, 23, 59, 0)
+        $dateTimeValue = [datetime] $Value
+        if ($dateTimeValue -lt $smallDateTimeMinimum -or $dateTimeValue -gt $smallDateTimeMaximum -or
+            ($dateTimeValue.Ticks % [timespan]::TicksPerMinute) -ne 0) {
+            throw [System.ArgumentException]::new('Invalid smalldatetime value: use a minute-aligned value from 1900-01-01 through 2079-06-06 23:59.')
+        }
+        return [datetime]::new($dateTimeValue.Year, $dateTimeValue.Month, $dateTimeValue.Day, $dateTimeValue.Hour, $dateTimeValue.Minute, 0)
     }
 
     if ($type -in @('time', 'datetime2', 'datetimeoffset')) {
         $scale = [int] $Column.Scale
         if ($scale -lt 0 -or $scale -gt 7) {
             throw [System.ArgumentException]::new('Temporal column scale metadata is invalid.')
+        }
+        if ($type -eq 'time' -and ($Value.Ticks -lt 0 -or $Value.Ticks -ge [timespan]::TicksPerDay)) {
+            throw [System.ArgumentException]::new('Invalid time value: use a non-negative time within one day.')
         }
         $tickQuantum = [long] [Math]::Pow(10, 7 - $scale)
         if (([long] $Value.Ticks % $tickQuantum) -ne 0) {
@@ -204,6 +281,7 @@ function ConvertTo-SqlUtilityDataExplorerLiteral([object] $Value, [object] $Colu
     $invariant = [System.Globalization.CultureInfo]::InvariantCulture
     $type = Get-SqlUtilityDataExplorerColumnType $Column
     if ($Type -in @('char', 'varchar', 'nchar', 'nvarchar')) { $prefix = if ($Type -in @('nchar', 'nvarchar')) { 'N' } else { '' }; return $prefix + "'" + ([string] $Value).Replace("'", "''") + "'" }
+    if ($Type -in @('decimal','numeric') -and $Value -is [System.Data.SqlTypes.SqlDecimal]) { return $Value.ToString() }
     if ($Type -in @('tinyint','smallint','int','bigint','decimal','numeric','smallmoney','money','real','float')) { return [System.Convert]::ToString($Value, $invariant) }
     if ($Type -eq 'date') { return "'$($Value.ToString('yyyy-MM-dd', $invariant))'" }
     if ($type -eq 'datetime2') {

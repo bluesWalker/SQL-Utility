@@ -35,9 +35,10 @@ The README contains:
 - Runtime requirements and portability guarantees.
 - The exact portable distribution layout and launch instructions.
 - The end-user workflow for connection testing, connecting, query execution, paging, export, settings, saved connections, and changing connections.
+- The Data Explorer workflow for physical-table discovery, bounded previews, structured filters, preview export, and generated-SQL handoff.
 - A detailed implementation overview with a compact Mermaid component/data-flow diagram.
 - The responsibility and dependency boundary of `SqlUtility.ps1` and each file in `modules/`.
-- The application-local configuration schema, validation ranges, persistence location, safe replacement behavior, and explicit list of data that is never stored.
+- The application-local schema 2 configuration, schema 1 in-memory migration, validation ranges, persistence location, safe replacement behavior, and explicit list of data that is never stored.
 - The accepted single-table read-only query shape, representative accepted examples, rejected constructs, and the warning that client validation does not replace SQL Server permissions.
 - The two paging models: ordered server-side 500-row pages with a 501-row sentinel, and bounded unordered retrieval with local 500-row display pages.
 - Complete-result Excel export behavior, availability rules, streaming/cached sources, workbook formatting, data-fidelity safeguards, Excel limits, and safe destination replacement.
@@ -77,6 +78,7 @@ Agents must:
 - Avoid third-party dependencies, installation, compiled executables, administrator access, Office automation, registry writes, and environment-variable writes.
 - Preserve Windows integrated authentication and never introduce, request, log, or persist credentials.
 - Respect the established module boundaries among UI/workflow, configuration, query policy, database access, and Excel export.
+- Preserve the UI-neutral Data Explorer module boundary: catalog-derived identifiers and typed builder/preview descriptors belong there, while SQL execution and WinForms remain outside it.
 - Treat the query policy as a safety boundary and obtain explicit approval before widening the single-statement, single-table, read-only `SELECT` scope.
 - Preserve ordered/unordered paging semantics, complete-export eligibility, timeout enforcement, Excel limits, data fidelity, resource disposal, and safe file replacement.
 - Limit persistence to validated app-local configuration/transient files and user-selected Excel destinations.
@@ -96,6 +98,7 @@ Agents must:
 - `docs/superpowers/specs/2026-08-02-sql-utility-v1-design.md` for the approved v1 product design.
 - `docs/superpowers/plans/2026-08-02-sql-utility-v1.md` for implementation history and task decomposition.
 - `docs/superpowers/specs/2026-08-05-project-documentation-design.md` for the documentation ownership model.
+- `docs/superpowers/specs/2026-08-14-sql-utility-data-explorer-design.md` for the Data Explorer, schema 2, and seven-file runtime extension.
 
 References are relative Markdown links so they work in local repository viewers and hosted Git forges.
 
@@ -105,7 +108,8 @@ Documentation implementation is complete only when:
 
 - Both files exist at the repository root.
 - All referenced paths and commands exist in the checkout.
-- The README distribution tree exactly matches the six runtime files.
+- The README distribution tree exactly matches the seven runtime files.
+- Data Explorer architecture, `previewRowLimit`, and `tests\Test-DataExplorer.ps1` ownership match the extension design, production code, and aggregate runner.
 - Setting ranges, defaults, timeouts, paging limits, Excel limits, and persistence behavior match production code and tests.
 - No unfinished placeholder markers remain.
 - `AGENTS.md` contains direct, testable instructions and does not conflict with `README.md`.

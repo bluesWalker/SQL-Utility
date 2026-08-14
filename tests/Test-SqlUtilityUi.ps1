@@ -11,6 +11,15 @@ function Get-TestControl($Root, [string] $Name) {
     return $matches[0]
 }
 
+function Assert-TestControlContained($Control, [string] $Message) {
+    $parent = $Control.Parent
+    $contained = $null -ne $parent -and
+        $Control.Left -ge 0 -and $Control.Top -ge 0 -and
+        $Control.Right -le $parent.ClientSize.Width -and
+        $Control.Bottom -le $parent.ClientSize.Height
+    Assert-True $contained $Message
+}
+
 function New-TestServices {
     $recorder = [pscustomobject]@{
         TestCalls = [System.Collections.Generic.List[object]]::new()
@@ -324,7 +333,10 @@ $requiredControlNames = @(
     'QuerySplitContainer', 'ResultsGrid', 'DataExplorerTab', 'TableFilterTextBox',
     'RefreshTablesButton', 'PhysicalTablesList', 'OutputColumnsList', 'SelectAllColumnsButton',
     'SelectNoColumnsButton', 'PreviewButton', 'ExportPreviewButton', 'PreviewSourceLabel', 'PreviewStatusLabel',
-    'PreviewGrid', 'PreviewLimitNumeric'
+    'PreviewGrid', 'PreviewLimitNumeric', 'DataExplorerMainSplit', 'DataExplorerTableLayout',
+    'DataExplorerRightSplit', 'DataExplorerBuilderLayout', 'DataExplorerBuilderSplit',
+    'DataExplorerColumnsLayout', 'DataExplorerFiltersLayout', 'DataExplorerActionLayout',
+    'DataExplorerPreviewLayout'
 )
 
 # Page status text uses exact totals only when the state makes them known.
@@ -1386,6 +1398,45 @@ try {
     Enter-TestWorkspace $explorerForm
     (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
     [System.Windows.Forms.Application]::DoEvents()
+    foreach ($name in @(
+        'PhysicalTablesList',
+        'OutputColumnsList',
+        'DataExplorerFiltersPanel',
+        'PreviewGrid'
+    )) {
+        Assert-TestControlContained (Get-TestControl $explorerForm $name) `
+            "$name remains inside its owning pane at default size"
+    }
+    $mainSplit = Get-TestControl $explorerForm 'DataExplorerMainSplit'
+    $rightSplit = Get-TestControl $explorerForm 'DataExplorerRightSplit'
+    $builderSplit = Get-TestControl $explorerForm 'DataExplorerBuilderSplit'
+
+    Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $mainSplit.Orientation `
+        'Table pane is left of the main Data Explorer area'
+    Assert-Equal ([System.Windows.Forms.Orientation]::Horizontal) $rightSplit.Orientation `
+        'Builder is above Preview'
+    Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $builderSplit.Orientation `
+        'Columns are left of filters'
+    Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $mainSplit.FixedPanel `
+        'Main panes resize without a fixed panel'
+    Assert-True ([object]::ReferenceEquals(
+        (Get-TestControl $explorerForm 'PhysicalTablesList').Parent,
+        (Get-TestControl $explorerForm 'DataExplorerTableLayout')
+    )) 'Table list is owned by the table layout'
+    Assert-True ([object]::ReferenceEquals(
+        (Get-TestControl $explorerForm 'PreviewGrid').Parent,
+        (Get-TestControl $explorerForm 'DataExplorerPreviewLayout')
+    )) 'Preview grid is owned by the lower preview layout'
+
+    Assert-Equal $false (Get-TestControl $explorerForm 'PhysicalTablesList').HorizontalScrollbar `
+        'Table list is vertical-scroll only'
+    Assert-Equal $false (Get-TestControl $explorerForm 'OutputColumnsList').HorizontalScrollbar `
+        'Output list is vertical-scroll only'
+    Assert-Equal $true (Get-TestControl $explorerForm 'DataExplorerFiltersPanel').AutoScroll `
+        'Filter pane owns scrolling'
+    Assert-Equal ([System.Windows.Forms.ScrollBars]::Both) `
+        (Get-TestControl $explorerForm 'PreviewGrid').ScrollBars `
+        'Preview grid supports horizontal and vertical scrolling'
     Assert-Equal 1 $explorerHarness.Recorder.TableCalls.Count 'First activation loads catalog once'
     Assert-Equal 3 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Catalog binds physical tables'
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'

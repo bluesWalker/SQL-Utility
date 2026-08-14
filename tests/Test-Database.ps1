@@ -126,6 +126,10 @@ foreach ($invalidLimit in @(9, 501)) {
     Assert-Throws { Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit $invalidLimit -CommandTimeoutSeconds 5 -Executor { throw 'must not run' } } `
         'System.ArgumentOutOfRangeException' 'Preview rejects limits outside 10 through 500'
 }
+foreach ($nonIntegralLimit in @('25', 25.4)) {
+    Assert-Throws { Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit $nonIntegralLimit -CommandTimeoutSeconds 5 -Executor { throw 'must not run' } } `
+        'System.ArgumentException' 'Preview rejects values that are not integral CLR numeric types'
+}
 
 $script:connectionTestCall = $null
 $connectionTestExecutor = {

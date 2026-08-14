@@ -388,12 +388,19 @@ function Invoke-SqlUtilityDataPreview {
         [Parameter(Mandatory = $true)][string] $Server,
         [Parameter(Mandatory = $true)][string] $Database,
         [Parameter(Mandatory = $true)] $Query,
-        [Parameter(Mandatory = $true)][int] $PreviewRowLimit,
+        [Parameter(Mandatory = $true)][object] $PreviewRowLimit,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
         [scriptblock] $Executor
     )
 
-    if ($PreviewRowLimit -lt 10 -or $PreviewRowLimit -gt 500) {
+    if ($PreviewRowLimit -isnot [sbyte] -and $PreviewRowLimit -isnot [byte] -and `
+        $PreviewRowLimit -isnot [int16] -and $PreviewRowLimit -isnot [uint16] -and `
+        $PreviewRowLimit -isnot [int] -and $PreviewRowLimit -isnot [uint32] -and `
+        $PreviewRowLimit -isnot [int64] -and $PreviewRowLimit -isnot [uint64]) {
+        throw [System.ArgumentException]::new('Preview row limit must be an integral CLR value.', 'PreviewRowLimit')
+    }
+    $previewLimitValue = [decimal] $PreviewRowLimit
+    if ($previewLimitValue -lt 10 -or $previewLimitValue -gt 500) {
         throw [System.ArgumentOutOfRangeException]::new('PreviewRowLimit', 'Preview row limit must be from 10 through 500.')
     }
 
@@ -401,9 +408,9 @@ function Invoke-SqlUtilityDataPreview {
     if ($null -eq $Executor) {
         return Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $Query.PreviewSql `
             -ParameterDescriptors $Query.PreviewParameters -CommandTimeoutSeconds $CommandTimeoutSeconds `
-            -MaximumRows $PreviewRowLimit
+            -MaximumRows ([int] $previewLimitValue)
     }
-    return & $Executor $connectionString $Query.PreviewSql $Query.PreviewParameters $CommandTimeoutSeconds $PreviewRowLimit
+    return & $Executor $connectionString $Query.PreviewSql $Query.PreviewParameters $CommandTimeoutSeconds ([int] $previewLimitValue)
 }
 
 function Invoke-SqlUtilityOrderedPage {

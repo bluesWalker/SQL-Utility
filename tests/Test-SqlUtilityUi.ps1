@@ -1403,11 +1403,12 @@ foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
 foreach ($rowNumber in 1..100) {
     $row = $layoutPreview.NewRow()
     foreach ($column in @($layoutHarness.Recorder.ColumnsResult)) {
-        $row[$column.Name] = ('value-{0:D3}-abcdefghijklmnopqrstuvwxy' -f $rowNumber)
+        $row[$column.Name] = ('value-{0:D3}-abcdefghijklmnopqrstuvwxyzABCD' -f $rowNumber)
     }
     [void] $layoutPreview.Rows.Add($row)
 }
 $layoutHarness.Recorder.PreviewResult = $layoutPreview
+Assert-Equal 40 $layoutPreview.Rows[0][0].Length 'Large preview fixture uses 40-character cell values'
 $layoutForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $layoutHarness.Services
 try {
     Show-TestForm $layoutForm
@@ -1512,6 +1513,20 @@ try {
     Assert-Equal ([System.Windows.Forms.ScrollBars]::Both) $previewGrid.ScrollBars 'Preview grid retains both scrollbars'
     Assert-True ($previewGrid.FirstDisplayedScrollingRowIndex -gt 0) 'Resize preserves a nonzero preview vertical scroll position'
     Assert-True ($previewGrid.HorizontalScrollingOffset -gt 0) 'Resize preserves a nonzero preview horizontal scroll position'
+    $filtersPanel.AutoScrollPosition = [System.Drawing.Point]::new(0, 0)
+    $onScroll = @([System.Windows.Forms.ScrollableControl].GetMethods([System.Reflection.BindingFlags]'Instance,NonPublic') | Where-Object {
+        $_.Name -eq 'OnScroll' -and $_.GetParameters().Count -eq 1
+    })[0]
+    [void] $onScroll.Invoke($filtersPanel, @([System.Windows.Forms.ScrollEventArgs]::new(
+        [System.Windows.Forms.ScrollEventType]::ThumbPosition,
+        $filterScrollBeforeResize,
+        0,
+        [System.Windows.Forms.ScrollOrientation]::VerticalScroll
+    )))
+    [System.Windows.Forms.Application]::DoEvents()
+    $layoutForm.Size = [System.Drawing.Size]::new(860, 600)
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal 0 $filtersPanel.VerticalScroll.Value 'Resize preserves an intentional filter scroll position at the top'
 }
 finally {
     $layoutForm.Close()

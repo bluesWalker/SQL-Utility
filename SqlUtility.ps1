@@ -1282,7 +1282,7 @@ function New-SqlUtilityMainForm {
     $clearFilters=[System.Windows.Forms.Button]::new();$clearFilters.Name='ClearFiltersButton';$clearFilters.Text='Clear';$clearFilters.AutoSize=$true;[void]$dataExplorerFiltersLayout.Controls.Add($clearFilters,1,0)
     $filtersPanel=[System.Windows.Forms.FlowLayoutPanel]::new();$filtersPanel.Name='DataExplorerFiltersPanel';$filtersPanel.Dock=[System.Windows.Forms.DockStyle]::Fill;$filtersPanel.FlowDirection='TopDown';$filtersPanel.WrapContents=$false;$filtersPanel.AutoScroll=$true;$dataExplorerFiltersLayout.SetColumnSpan($filtersPanel,2);[void]$dataExplorerFiltersLayout.Controls.Add($filtersPanel,0,1)
     $filterPanelLayoutState=[pscustomobject]@{VerticalScrollValue=0}
-    $filtersPanel.Add_Scroll({if($filtersPanel.VerticalScroll.Value -gt 0){$filterPanelLayoutState.VerticalScrollValue=$filtersPanel.VerticalScroll.Value}}.GetNewClosure())
+    $filtersPanel.Add_Scroll({$filterPanelLayoutState.VerticalScrollValue=$filtersPanel.VerticalScroll.Value}.GetNewClosure())
     $filtersPanel.Add_ClientSizeChanged({
         if($filtersPanel.VerticalScroll.Value -gt 0){$filterPanelLayoutState.VerticalScrollValue=$filtersPanel.VerticalScroll.Value}
         Resize-SqlUtilityDataExplorerFilterRows $form

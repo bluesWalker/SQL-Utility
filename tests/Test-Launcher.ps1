@@ -31,6 +31,7 @@ $runtimeFiles = @(
     'SqlUtility.ps1',
     'modules\SqlUtility.Config.ps1',
     'modules\SqlUtility.QueryPolicy.ps1',
+    'modules\SqlUtility.DataExplorer.ps1',
     'modules\SqlUtility.Database.ps1',
     'modules\SqlUtility.Excel.ps1'
 )

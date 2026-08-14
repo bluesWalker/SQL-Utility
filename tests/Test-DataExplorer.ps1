@@ -272,6 +272,18 @@ Assert-Equal $precision38BoundaryText $precision38BoundaryQuery.PreviewParameter
 Assert-Equal 38 $precision38BoundaryQuery.PreviewParameters[1].Precision 'Precision 38 scaled boundary keeps the parameter precision facet'
 Assert-Equal 2 $precision38BoundaryQuery.PreviewParameters[1].Scale 'Precision 38 scaled boundary keeps the parameter scale facet'
 Assert-True ($precision38BoundaryQuery.EditorSql -match ([regex]::Escape("[Value] = $precision38BoundaryText;"))) 'Precision 38 scaled boundary renders exactly'
+foreach ($redundantZeroCase in @(
+    @{ Column=$precision38Scaled; Input='999999999999999999999999999999999999.990'; Expected='999999999999999999999999999999999999.99' },
+    @{ Column=$precision38Scaled; Input='-999999999999999999999999999999999999.990'; Expected='-999999999999999999999999999999999999.99' },
+    @{ Column=$precision38Integer; Input='99999999999999999999999999999999999999.0'; Expected='99999999999999999999999999999999999999' },
+    @{ Column=$precision38Integer; Input='-99999999999999999999999999999999999999.0'; Expected='-99999999999999999999999999999999999999' }
+)) {
+    $redundantZeroQuery = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($redundantZeroCase.Column) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$redundantZeroCase.Input }
+    ) -PreviewRowLimit 100
+    Assert-Equal $redundantZeroCase.Expected $redundantZeroQuery.PreviewParameters[1].Value.ToString() "Redundant fractional zeros preserve exact SQL value $($redundantZeroCase.Input)"
+    Assert-True ($redundantZeroQuery.EditorSql -match ([regex]::Escape("[Value] = $($redundantZeroCase.Expected);"))) "Redundant fractional zeros render exact SQL value $($redundantZeroCase.Input)"
+}
 Assert-Throws {
     New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Integer) -SelectedColumnNames @('Value') -Filters @(
         [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='100000000000000000000000000000000000000' }
@@ -288,6 +300,25 @@ try {
     $culturePrecision38Invariant = '123456789012345678901234567890123456.78'
     Assert-Equal $culturePrecision38Invariant $culturePrecision38Query.PreviewParameters[1].Value.ToString() 'Precision 38 accepts current-culture decimal input exactly'
     Assert-True ($culturePrecision38Query.EditorSql -match ([regex]::Escape("[Value] = $culturePrecision38Invariant;"))) 'Current-culture precision 38 parameter and editor literal are identical'
+}
+finally {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = $priorCulture
+}
+
+$priorCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+try {
+    [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo('en-US')
+    $groupedPrecision38Text = '999,999,999,999,999,999,999,999,999,999,999,999.99'
+    $groupedPrecision38Query = New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Scaled) -SelectedColumnNames @('Value') -Filters @(
+        [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText=$groupedPrecision38Text }
+    ) -PreviewRowLimit 100
+    Assert-Equal $precision38BoundaryText $groupedPrecision38Query.PreviewParameters[1].Value.ToString() 'Valid current-culture grouping preserves the precision 38 value'
+    Assert-True ($groupedPrecision38Query.EditorSql -match ([regex]::Escape("[Value] = $precision38BoundaryText;"))) 'Valid grouped precision 38 input renders invariantly'
+    Assert-Throws {
+        New-SqlUtilityDataExplorerQuery -Table $table -Columns @($precision38Scaled) -SelectedColumnNames @('Value') -Filters @(
+            [pscustomobject]@{ ColumnName='Value'; Operator='Equals'; ValueText='1.2,3' }
+        ) -PreviewRowLimit 100
+    } 'System.ArgumentException' 'Malformed current-culture grouping after the decimal separator is rejected'
 }
 finally {
     [System.Threading.Thread]::CurrentThread.CurrentCulture = $priorCulture

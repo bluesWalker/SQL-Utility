@@ -90,6 +90,11 @@ function ConvertTo-SqlUtilityDataExplorerInvariantNumberText {
 
     $text = $ValueText.Trim()
     $numberFormat = $Culture.NumberFormat
+    $syntaxProbeText = [regex]::Replace($text, '[0-9]', '0')
+    $syntaxProbeValue = [decimal]::Zero
+    if (-not [decimal]::TryParse($syntaxProbeText, [System.Globalization.NumberStyles]::Number, $Culture, [ref] $syntaxProbeValue)) {
+        throw [System.FormatException]::new('Numeric value is not valid for the current culture.')
+    }
     $isNegative = $false
     $hasSign = $false
     foreach ($signDefinition in @(
@@ -129,6 +134,10 @@ function ConvertTo-SqlUtilityDataExplorerInvariantNumberText {
     }
     if ($text.StartsWith('.', [System.StringComparison]::Ordinal)) { $text = '0' + $text }
     if ($text.EndsWith('.', [System.StringComparison]::Ordinal)) { $text = $text.Substring(0, $text.Length - 1) }
+    elseif ($text.Contains('.')) {
+        $text = $text.TrimEnd([char[]] @('0'))
+        if ($text.EndsWith('.', [System.StringComparison]::Ordinal)) { $text = $text.Substring(0, $text.Length - 1) }
+    }
     if ($isNegative) { $text = '-' + $text }
     return $text
 }

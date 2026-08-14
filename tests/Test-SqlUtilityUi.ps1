@@ -44,6 +44,7 @@ function New-TestServices {
         TableError = $null
         ColumnError = $null
         PreviewError = $null
+        BuildExplorerError = $null
         DialogCalls = 0
         TestError = $null
         WriteError = $null
@@ -210,6 +211,7 @@ function New-TestServices {
         BuildDataExplorerQuery = {
             param($Table,$Columns,$SelectedNames,$Filters,$Limit)
             [void] $recorder.BuildExplorerCalls.Add([pscustomobject]@{Table=$Table;Columns=$Columns;SelectedNames=$SelectedNames;Filters=$Filters;Limit=$Limit})
+            if ($recorder.BuildExplorerError) { throw $recorder.BuildExplorerError }
             return New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit
         }.GetNewClosure()
         ExecuteDataPreview = {
@@ -1380,6 +1382,61 @@ try {
     Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
     Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'First Preview binds returned DataTable'
     Assert-Equal '2 rows displayed (unordered)' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Preview reports exact unordered rows'
+
+    # Structured filters use all filterable metadata and preserve visual order.
+    (Get-TestControl $explorerForm 'AddFilterButton').PerformClick()
+    (Get-TestControl $explorerForm 'AddFilterButton').PerformClick()
+    $filterColumn1 = Get-TestControl $explorerForm 'FilterColumnCombo1'
+    Assert-Equal 'Id,Name,CreatedAt' (@($filterColumn1.Items | ForEach-Object Name) -join ',') 'Filter choices include unchecked filterable columns and exclude output-only columns'
+    $filterColumn1.SelectedIndex = 2
+    $filterOperator1 = Get-TestControl $explorerForm 'FilterOperatorCombo1'
+    Assert-Equal 'Equals,NotEquals,GreaterThan,GreaterThanOrEqual,LessThan,LessThanOrEqual' (@($filterOperator1.Items | ForEach-Object Key) -join ',') 'Date operators follow type and nullability'
+    $filterOperator1.SelectedIndex = 2
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = '2026-01-01'
+    $filterColumn2 = Get-TestControl $explorerForm 'FilterColumnCombo2'
+    $filterColumn2.SelectedIndex = 1
+    $filterOperator2 = Get-TestControl $explorerForm 'FilterOperatorCombo2'
+    $filterOperator2.SelectedIndex = 2
+    (Get-TestControl $explorerForm 'FilterValueText2').Text = 'north'
+    (Get-TestControl $explorerForm 'OutputColumnsList').SetItemChecked(1,$false)
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    $filterBuild = $explorerHarness.Recorder.BuildExplorerCalls[$explorerHarness.Recorder.BuildExplorerCalls.Count-1]
+    Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($filterBuild.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Preview sends ordered neutral filters'
+    Assert-Equal 'Id,CreatedAt,Payload' (@($filterBuild.SelectedNames) -join ',') 'Filtered unchecked column remains independent from output selection'
+
+    $priorPreviewCalls = $explorerHarness.Recorder.PreviewCalls.Count
+    $priorMessages = $explorerHarness.Recorder.Messages.Count
+    $priorSnapshot = $explorerForm.Tag.DataExplorerPreview
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = 'not-a-date'
+    (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
+    Assert-Equal $priorPreviewCalls $explorerHarness.Recorder.PreviewCalls.Count 'Invalid typed filter prevents preview execution'
+    Assert-Equal ($priorMessages+1) $explorerHarness.Recorder.Messages.Count 'Invalid typed filter shows one validation message'
+    Assert-True ([object]::ReferenceEquals($priorSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Invalid typed filter preserves preview snapshot'
+    (Get-TestControl $explorerForm 'FilterValueText1').Text = '2026-01-01'
+
+    $filterColumn2.SelectedIndex = 2
+    Assert-Equal 2 $filterColumn2.SelectedIndex 'Duplicate filter columns are permitted'
+    $filterColumn2.SelectedIndex = 1
+    $filterOperator2.SelectedIndex = 4
+    Assert-Equal $false (Get-TestControl $explorerForm 'FilterValueText2').Enabled 'Value-free operator disables its value input'
+
+    # Send uses current builder state, confirms replacement, selects Query, and never executes it.
+    $sendButton = Get-TestControl $explorerForm 'SendToQueryButton'
+    $sqlEditor = Get-TestControl $explorerForm 'SqlEditor'
+    $sqlEditor.Text = 'SELECT Existing FROM dbo.KeepMe'
+    $explorerHarness.Recorder.ConfirmResult = $false
+    $sendButton.PerformClick()
+    Assert-Equal 'SELECT Existing FROM dbo.KeepMe' $sqlEditor.Text 'Decline preserves editor'
+    $explorerHarness.Recorder.ConfirmResult = $true
+    $sendButton.PerformClick()
+    Assert-Equal 0 $explorerHarness.Recorder.OrderedCalls.Count 'Send does not execute Query tab SQL'
+    Assert-Equal (Get-TestControl $explorerForm 'QueryTab') (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab 'Send selects Query tab'
+    Assert-True ($sqlEditor.Text -like 'SELECT *FROM*') 'Confirm writes generated current builder SQL'
+    $sentSql = $sqlEditor.Text;$selectedTab=(Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab;$explorerHarness.Recorder.BuildExplorerError='build failed'
+    $sendButton.PerformClick()
+    Assert-Equal $sentSql $sqlEditor.Text 'Builder failure preserves editor text'
+    Assert-Equal $selectedTab (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab 'Builder failure preserves selected tab'
+    $explorerHarness.Recorder.BuildExplorerError=$null
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'Later Preview reuses metadata'
     (Get-TestControl $explorerForm 'SelectNoColumnsButton').PerformClick()
@@ -1419,6 +1476,25 @@ try {
     Assert-Equal '' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Connection reset clears preview status'
 }
 finally { $explorerForm.Dispose() }
+
+# Bit filters use a constrained Boolean selector and emit its neutral label.
+$bitHarness = New-TestServices
+$bitHarness.Recorder.ColumnsResult += [pscustomobject]@{ Name='IsActive'; Ordinal=5; SqlTypeName='bit'; MaxLength=1; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false }
+$bitHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 1
+$bitForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $bitHarness.Services
+try {
+    Show-TestForm $bitForm; Enter-TestWorkspace $bitForm
+    (Get-TestControl $bitForm 'WorkspaceTabs').SelectedTab=Get-TestControl $bitForm 'DataExplorerTab';[System.Windows.Forms.Application]::DoEvents()
+    (Get-TestControl $bitForm 'PhysicalTablesList').SelectedIndex=0;(Get-TestControl $bitForm 'PreviewButton').PerformClick()
+    (Get-TestControl $bitForm 'AddFilterButton').PerformClick()
+    $bitColumn=Get-TestControl $bitForm 'FilterColumnCombo1';$bitColumn.SelectedIndex=3
+    $bitValue=Get-TestControl $bitForm 'FilterValueBitCombo1'
+    Assert-Equal 'True,False' (@($bitValue.Items)-join ',') 'Bit value selector is constrained to Boolean labels'
+    $bitValue.SelectedItem='False';(Get-TestControl $bitForm 'PreviewButton').PerformClick()
+    $bitBuild=$bitHarness.Recorder.BuildExplorerCalls[$bitHarness.Recorder.BuildExplorerCalls.Count-1]
+    Assert-Equal 'False' $bitBuild.Filters[0].ValueText 'Bit filter emits selected neutral label'
+}
+finally { $bitForm.Dispose() }
 
 # Failed initial catalog load remains retryable.
 $catalogRetryHarness = New-TestServices

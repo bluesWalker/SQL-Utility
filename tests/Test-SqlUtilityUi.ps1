@@ -1514,9 +1514,11 @@ try {
     $exportPreviewButton=Get-TestControl $previewExportForm 'ExportPreviewButton'
     Assert-Equal $true $exportPreviewButton.Enabled 'Successful Preview enables Export Preview'
     (Get-TestControl $previewExportForm 'OutputColumnsList').SetItemChecked(0,$false)
+    (Get-TestControl $previewExportForm 'AddFilterButton').PerformClick()
+    (Get-TestControl $previewExportForm 'FilterValueText1').Text='snapshot-independent-filter'
     (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=1
     (Get-TestControl $previewExportForm 'PreviewLimitNumeric').Value=222
-    Assert-True ([object]::ReferenceEquals($snapshotA,$previewExportForm.Tag.DataExplorerPreview)) 'Builder table columns and settings changes preserve snapshot'
+    Assert-True ([object]::ReferenceEquals($snapshotA,$previewExportForm.Tag.DataExplorerPreview)) 'Builder table columns filters and settings changes preserve snapshot'
     Assert-True ([object]::ReferenceEquals($previewA,(Get-TestControl $previewExportForm 'PreviewGrid').DataSource)) 'Builder changes preserve displayed preview data'
     Assert-Equal $sourceA (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Builder changes preserve preview source label'
     Assert-Equal $true $exportPreviewButton.Enabled 'Builder changes keep Export Preview enabled'
@@ -1547,6 +1549,8 @@ try {
     Set-SqlUtilityBusy $previewExportForm $false 'Ready.'
     Assert-Equal $true (Get-TestControl $previewExportForm 'PreviewButton').Enabled 'Ready state restores Preview for selected table'
     Assert-Equal $true $exportPreviewButton.Enabled 'Ready state restores Export Preview for snapshot'
+    (Get-TestControl $previewExportForm 'TableFilterTextBox').Text='Orders'
+    $previewExportForm.Tag.DataExplorerFilterRowNumber=37
     $previewExportHarness.Recorder.ConfirmResult=$true
     (Get-TestControl $previewExportForm 'ChangeConnectionButton').PerformClick()
     Assert-True ($previewExportHarness.Recorder.ConfirmCalls[-1].Text -like '*Data Explorer*') 'Change Connection confirmation names Explorer state loss'
@@ -1554,6 +1558,8 @@ try {
     Assert-Equal $false $exportPreviewButton.Enabled 'Confirmed Change Connection disables Export Preview'
     Assert-True ($null -eq (Get-TestControl $previewExportForm 'PreviewGrid').DataSource) 'Confirmed Change Connection clears preview grid'
     Assert-Equal '' (Get-TestControl $previewExportForm 'PreviewSourceLabel').Text 'Confirmed Change Connection clears preview source label'
+    Assert-Equal '' (Get-TestControl $previewExportForm 'TableFilterTextBox').Text 'Confirmed Change Connection clears table-list filter'
+    Assert-Equal 0 $previewExportForm.Tag.DataExplorerFilterRowNumber 'Confirmed Change Connection resets filter-row counter'
 }
 finally { $previewExportForm.Dispose() }
 

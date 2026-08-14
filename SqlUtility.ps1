@@ -855,6 +855,8 @@ function Reset-SqlUtilityWorkspaceState {
     $state.DataExplorerTables = @()
     $state.DataExplorerBuilder = [pscustomobject][ordered]@{ Table=$null; Columns=@(); SelectedColumnNames=@(); Filters=@() }
     $state.DataExplorerPreview = $null
+    $state.DataExplorerFilterRowNumber = 0
+    (Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text=''
     foreach($listName in @('PhysicalTablesList','OutputColumnsList')){(Get-SqlUtilityNamedControl $Form $listName).Items.Clear()}
     Clear-SqlUtilityDataExplorerFilterRows $Form
     $previewGrid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$previewGrid.DataSource=$null;$previewGrid.Columns.Clear()

@@ -651,19 +651,54 @@ function Find-SqlUtilityDataExplorerOutputColumnPrefix {
     return -1
 }
 
-function Invoke-SqlUtilityDataExplorerOutputColumnKeyPress {
+function Get-SqlUtilityDataExplorerOutputColumnKeyDownCharacter {
+    param([System.Windows.Forms.KeyEventArgs] $EventArgs)
+
+    $keyValue = [int] $EventArgs.KeyCode
+    if ($keyValue -ge [int] [System.Windows.Forms.Keys]::A -and $keyValue -le [int] [System.Windows.Forms.Keys]::Z) {
+        return [char] $keyValue
+    }
+    if ($keyValue -ge [int] [System.Windows.Forms.Keys]::D0 -and $keyValue -le [int] [System.Windows.Forms.Keys]::D9) {
+        return [char] $keyValue
+    }
+    if ($keyValue -ge [int] [System.Windows.Forms.Keys]::NumPad0 -and $keyValue -le [int] [System.Windows.Forms.Keys]::NumPad9) {
+        return [char] ([int] [char] '0' + $keyValue - [int] [System.Windows.Forms.Keys]::NumPad0)
+    }
+
+    $shift = $EventArgs.Shift
+    switch ($EventArgs.KeyCode) {
+        ([System.Windows.Forms.Keys]::Space) { return [char] ' ' }
+        ([System.Windows.Forms.Keys]::OemMinus) { return $(if ($shift) { [char] '_' } else { [char] '-' }) }
+        ([System.Windows.Forms.Keys]::Oemplus) { return $(if ($shift) { [char] '+' } else { [char] '=' }) }
+        ([System.Windows.Forms.Keys]::OemOpenBrackets) { return $(if ($shift) { [char] '{' } else { [char] '[' }) }
+        ([System.Windows.Forms.Keys]::OemCloseBrackets) { return $(if ($shift) { [char] '}' } else { [char] ']' }) }
+        ([System.Windows.Forms.Keys]::OemPipe) { return $(if ($shift) { [char] '|' } else { [char] '\' }) }
+        ([System.Windows.Forms.Keys]::OemSemicolon) { return $(if ($shift) { [char] ':' } else { [char] ';' }) }
+        ([System.Windows.Forms.Keys]::OemQuotes) { return $(if ($shift) { [char] '"' } else { [char] "'" }) }
+        ([System.Windows.Forms.Keys]::Oemcomma) { return $(if ($shift) { [char] '<' } else { [char] ',' }) }
+        ([System.Windows.Forms.Keys]::OemPeriod) { return $(if ($shift) { [char] '>' } else { [char] '.' }) }
+        ([System.Windows.Forms.Keys]::OemQuestion) { return $(if ($shift) { [char] '?' } else { [char] '/' }) }
+        ([System.Windows.Forms.Keys]::Oemtilde) { return $(if ($shift) { [char] '~' } else { [char] '`' }) }
+    }
+
+    return $null
+}
+
+function Invoke-SqlUtilityDataExplorerOutputColumnKeyDown {
     param(
         [System.Windows.Forms.Form] $Form,
-        [System.Windows.Forms.KeyPressEventArgs] $EventArgs
+        [System.Windows.Forms.KeyEventArgs] $EventArgs
     )
 
-    if ([char]::IsControl($EventArgs.KeyChar)) { return }
+    if ($EventArgs.Control -or $EventArgs.Alt) { return }
+    $character = Get-SqlUtilityDataExplorerOutputColumnKeyDownCharacter $EventArgs
+    if ($null -eq $character) { return }
     $EventArgs.Handled = $true
+    $EventArgs.SuppressKeyPress = $true
 
     $interaction = $Form.Tag.DataExplorerOutputInteraction
     $interaction.ResetTimer.Stop()
-    $character = [string] $EventArgs.KeyChar
-    $candidate = [string] $interaction.Prefix + $character
+    $candidate = [string] $interaction.Prefix + [string] $character
     $outputList = Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
     $match = Find-SqlUtilityDataExplorerOutputColumnPrefix $outputList $candidate
     if ($match -lt 0) {
@@ -1536,7 +1571,7 @@ function New-SqlUtilityMainForm {
     $clearFilters.Add_Click({Clear-SqlUtilityDataExplorerFilterRows $form}.GetNewClosure())
     $send.Add_Click({Invoke-SqlUtilityDataExplorerSendToQuery $form}.GetNewClosure())
     $outputs.Add_MouseDown({Invoke-SqlUtilityDataExplorerOutputColumnMouseDown $form $_}.GetNewClosure())
-    $outputs.Add_KeyPress({Invoke-SqlUtilityDataExplorerOutputColumnKeyPress $form $_}.GetNewClosure())
+    $outputs.Add_KeyDown({Invoke-SqlUtilityDataExplorerOutputColumnKeyDown $form $_}.GetNewClosure())
     $outputs.Add_ItemCheck({
         if (-not $form.Tag.DataExplorerOutputInteraction.AllowCheckChange) {
             $_.NewValue = $_.CurrentValue

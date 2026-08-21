@@ -1465,8 +1465,8 @@ function New-SqlUtilityMainForm {
             Update-SqlUtilityDataExplorerSendState $form
         }
     }.GetNewClosure())
-    $all.Add_Click({Set-SqlUtilityDataExplorerAllOutputColumnsChecked $form $true}.GetNewClosure())
-    $none.Add_Click({Set-SqlUtilityDataExplorerAllOutputColumnsChecked $form $false}.GetNewClosure())
+    $all.Add_Click({Set-SqlUtilityDataExplorerAllOutputColumnsChecked -Form $form -Checked $true}.GetNewClosure())
+    $none.Add_Click({Set-SqlUtilityDataExplorerAllOutputColumnsChecked -Form $form -Checked $false}.GetNewClosure())
     $preview.Add_Click({Invoke-SqlUtilityDataExplorerPreview $form}.GetNewClosure())
     $exportPreview.Add_Click({Invoke-SqlUtilityDataExplorerExportPreview $form}.GetNewClosure())
     $addFilter.Add_Click({Add-SqlUtilityDataExplorerFilterRow $form}.GetNewClosure())
@@ -1474,8 +1474,10 @@ function New-SqlUtilityMainForm {
     $send.Add_Click({Invoke-SqlUtilityDataExplorerSendToQuery $form}.GetNewClosure())
     $outputs.Add_MouseDown({Invoke-SqlUtilityDataExplorerOutputColumnMouseDown $form $_}.GetNewClosure())
     $outputs.Add_ItemCheck({
-        $_.NewValue = $_.CurrentValue
-        if (-not $form.Tag.DataExplorerOutputInteraction.AllowCheckChange) { return }
+        if (-not $form.Tag.DataExplorerOutputInteraction.AllowCheckChange) {
+            $_.NewValue = $_.CurrentValue
+            return
+        }
         $form.BeginInvoke([System.Windows.Forms.MethodInvoker]{Update-SqlUtilityDataExplorerSendState $form})|Out-Null
     }.GetNewClosure())
     $changeConnectionButton.Add_Click({ Invoke-SqlUtilityChangeConnection -Form $form }.GetNewClosure())

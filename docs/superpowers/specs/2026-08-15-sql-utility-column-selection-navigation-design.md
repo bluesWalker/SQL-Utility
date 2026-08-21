@@ -51,7 +51,7 @@ No owner-drawn list, compiled helper, custom control assembly, or hard-coded uns
 
 ### Incremental prefix navigation
 
-The list's `KeyPress` handler consumes printable characters before native single-character matching can run. It restarts a WinForms `Timer` with `Interval = 1000` after every accepted character, performs an ordinal-ignore-case prefix search over item `Name` values, and updates only `SelectedIndex` for the first match.
+The form uses `KeyPreview = true` and a form-level `KeyPress` handler, gated so it acts only while the output list has focus. This route receives the actual printable `KeyChar` before the checked list's native single-character matching can run, including shifted and OEM punctuation that should participate in the prefix. It consumes the handled character, restarts a WinForms `Timer` with `Interval = 1000`, performs an ordinal-ignore-case prefix search over item `Name` values, and updates only `SelectedIndex` for the first match. The focus gate leaves all other controls' keyboard input unchanged.
 
 The timer tick clears only the prefix buffer. Table/builder reset, metadata repopulation, Refresh, and Change Connection also clear the buffer and stop the timer. The timer is stopped and disposed with the form so no event source outlives its controls.
 

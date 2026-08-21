@@ -1635,11 +1635,19 @@ try {
     Assert-Equal 'X' $interaction.Prefix 'A fully unmatched character is retained until reset'
     Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'An unmatched character preserves every output check'
 
+    Assert-Equal $true $navigationTimer.Enabled 'Accepted prefix input starts the form-owned reset timer'
     Invoke-TestProtectedControlEvent $navigationTimer 'OnTick' ([System.EventArgs]::Empty)
     Assert-Equal '' $interaction.Prefix 'Timer expiry clears only the buffered prefix'
     Assert-Equal $false $navigationTimer.Enabled 'Timer expiry stops the prefix timer'
     Assert-Equal 'CustomerID' $outputList.SelectedItem.Name 'Timer expiry preserves the current highlight'
     Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Timer expiry preserves every output check'
+
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'p') $navigationKeyPressObservation
+    Assert-Equal $true $eventArgs.Handled 'Lowercase input suppresses native matching'
+    Assert-Equal 'PlantID' $outputList.SelectedItem.Name 'Lowercase input matches column names case-insensitively'
+    Assert-Equal 'p' $interaction.Prefix 'Lowercase input is retained in the prefix buffer'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Lowercase input preserves every output check'
+    Invoke-TestProtectedControlEvent $navigationTimer 'OnTick' ([System.EventArgs]::Empty)
 
     $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'@') $navigationKeyPressObservation
     Assert-Equal $true $eventArgs.Handled 'Shifted punctuation suppresses native matching'

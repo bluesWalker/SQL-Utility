@@ -16,6 +16,24 @@ function Invoke-TestProtectedControlEvent($Control, [string] $MethodName, [Syste
     $method = $Control.GetType().GetMethod($MethodName, $flags)
     Assert-True ($null -ne $method) "$($Control.GetType().Name) exposes $MethodName"
     [void] $method.Invoke($Control, @($EventArgs))
+    if ($Control -is [System.Windows.Forms.CheckedListBox] -and $MethodName -eq 'OnKeyPress' -and
+        $EventArgs -is [System.Windows.Forms.KeyPressEventArgs]) {
+        # CheckedListBox's .NET Framework override does not raise its public KeyPress event.
+        $eventField = @([System.Windows.Forms.Control].GetFields(
+            [System.Reflection.BindingFlags]::Static -bor [System.Reflection.BindingFlags]::NonPublic
+        ) | Where-Object { $_.Name -in @('EventKeyPress', 's_keyPressEvent') })[0]
+        Assert-True ($null -ne $eventField) 'CheckedListBox KeyPress event key is available for test dispatch'
+        $eventKey = $eventField.GetValue($null)
+        $eventsProperty = [System.Windows.Forms.Control].GetProperty('Events', (
+            [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic
+        ))
+        Assert-True ($null -ne $eventsProperty) 'CheckedListBox event collection is available for test dispatch'
+        $events = $eventsProperty.GetValue($Control, $null)
+        $handler = $events[$eventKey]
+        if ($null -ne $handler) {
+            [void] $handler.DynamicInvoke(@($Control, $EventArgs))
+        }
+    }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
@@ -29,6 +47,13 @@ function Invoke-TestOutputColumnClick($Form, [int] $Index, [switch] $Text) {
         [System.Windows.Forms.MouseButtons]::Left, 1, $x, $y, 0
     )
     Invoke-TestProtectedControlEvent $list 'OnMouseDown' $eventArgs
+}
+
+function Invoke-TestOutputColumnKeyPress($Form, [char] $Character) {
+    $list = Get-TestControl $Form 'OutputColumnsList'
+    $eventArgs = [System.Windows.Forms.KeyPressEventArgs]::new($Character)
+    Invoke-TestProtectedControlEvent $list 'OnKeyPress' $eventArgs
+    return $eventArgs
 }
 
 function Assert-TestControlContained($Control, [string] $Message) {
@@ -1553,6 +1578,111 @@ try {
 finally {
     $layoutForm.Close()
     $layoutForm.Dispose()
+}
+
+# Buffered output-column prefix navigation uses real WinForms controls without changing checks.
+$navigationHarness = New-TestServices
+$navigationHarness.Recorder.ColumnsResult = @(
+    [pscustomobject]@{ Name='PlantID'; Ordinal=1; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false },
+    [pscustomobject]@{ Name='ProductID'; Ordinal=2; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false },
+    [pscustomobject]@{ Name='CustomerID'; Ordinal=3; SqlTypeName='int'; MaxLength=4; Precision=0; Scale=0; IsNullable=$false; IsUserDefined=$false },
+    [pscustomobject]@{ Name='Description'; Ordinal=4; SqlTypeName='nvarchar'; MaxLength=80; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false },
+    [pscustomobject]@{ Name='Region'; Ordinal=5; SqlTypeName='nvarchar'; MaxLength=80; Precision=0; Scale=0; IsNullable=$true; IsUserDefined=$false }
+)
+$navigationHarness.Recorder.PreviewResult = New-TestDataTable -RowCount 1
+$navigationForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $navigationHarness.Services
+try {
+    Show-TestForm $navigationForm
+    Enter-TestWorkspace $navigationForm
+    (Get-TestControl $navigationForm 'WorkspaceTabs').SelectedTab = Get-TestControl $navigationForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    $navigationTables = Get-TestControl $navigationForm 'PhysicalTablesList'
+    $navigationTables.SelectedIndex = 0
+    (Get-TestControl $navigationForm 'PreviewButton').PerformClick()
+    $outputList = Get-TestControl $navigationForm 'OutputColumnsList'
+    $interaction = $navigationForm.Tag.DataExplorerOutputInteraction
+    $navigationTimer = $interaction.ResetTimer
+    $navigationTimerDisposedState = [pscustomobject]@{ Value=$false }
+    $navigationTimer.Add_Disposed({ $navigationTimerDisposedState.Value = $true }.GetNewClosure())
+    Assert-Equal 1000 $navigationTimer.Interval 'Output prefix navigation resets after exactly one second'
+
+    $checkedBeforeTyping = @($outputList.CheckedItems | ForEach-Object Name) -join ','
+    foreach ($step in @(
+        [pscustomobject]@{ Character=[char]'P'; Expected='PlantID'; Prefix='P' },
+        [pscustomobject]@{ Character=[char]'R'; Expected='ProductID'; Prefix='PR' },
+        [pscustomobject]@{ Character=[char]'O'; Expected='ProductID'; Prefix='PRO' },
+        [pscustomobject]@{ Character=[char]'D'; Expected='ProductID'; Prefix='PROD' }
+    )) {
+        $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm $step.Character
+        Assert-Equal $true $eventArgs.Handled "Typing $($step.Character) suppresses native matching"
+        Assert-Equal $step.Expected $outputList.SelectedItem.Name "Typing $($step.Prefix) selects its first prefix match"
+        Assert-Equal $step.Prefix $navigationForm.Tag.DataExplorerOutputInteraction.Prefix "Typing stores prefix $($step.Prefix)"
+        Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') `
+            "Typing $($step.Prefix) preserves every output check"
+    }
+
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'C')
+    Assert-Equal $true $eventArgs.Handled 'Fallback input suppresses native matching'
+    Assert-Equal 'CustomerID' $outputList.SelectedItem.Name 'A failed complete prefix retries from its newest character'
+    Assert-Equal 'C' $interaction.Prefix 'Fallback retains only the newest matching character'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Fallback preserves every output check'
+
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'X')
+    Assert-Equal $true $eventArgs.Handled 'Unmatched input suppresses native matching'
+    Assert-Equal 'CustomerID' $outputList.SelectedItem.Name 'A fully unmatched character preserves the current highlight'
+    Assert-Equal 'X' $interaction.Prefix 'A fully unmatched character is retained until reset'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'An unmatched character preserves every output check'
+
+    Invoke-TestProtectedControlEvent $navigationTimer 'OnTick' ([System.EventArgs]::Empty)
+    Assert-Equal '' $interaction.Prefix 'Timer expiry clears only the buffered prefix'
+    Assert-Equal $false $navigationTimer.Enabled 'Timer expiry stops the prefix timer'
+    Assert-Equal 'CustomerID' $outputList.SelectedItem.Name 'Timer expiry preserves the current highlight'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Timer expiry preserves every output check'
+
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'P')
+    Assert-Equal $true $eventArgs.Handled 'Input after reset suppresses native matching'
+    Assert-Equal 'P' $interaction.Prefix 'Input after reset starts a new one-character prefix'
+    Assert-Equal 'PlantID' $outputList.SelectedItem.Name 'Input after reset searches from the new prefix'
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]' ')
+    Assert-Equal $true $eventArgs.Handled 'Space suppresses the native checkbox toggle'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Space never changes output checks'
+
+    $navigationTables.SelectedIndex = 1
+    Assert-Equal '' $interaction.Prefix 'Selecting another table clears buffered navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'Selecting another table stops the prefix timer'
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'P')
+    Assert-Equal 'P' $interaction.Prefix 'A pending metadata load can hold a transient prefix'
+    (Get-TestControl $navigationForm 'PreviewButton').PerformClick()
+    Assert-Equal '' $interaction.Prefix 'Metadata repopulation clears buffered navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'Metadata repopulation stops the prefix timer'
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'P')
+    Assert-Equal 'P' $interaction.Prefix 'Reloaded metadata accepts a new prefix'
+    $navigationHarness.Recorder.TableError = 'catalog unavailable'
+    (Get-TestControl $navigationForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal '' $interaction.Prefix 'A failed explicit Refresh clears buffered navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'A failed explicit Refresh stops the prefix timer'
+    $navigationHarness.Recorder.TableError = $null
+    (Get-TestControl $navigationForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal '' $interaction.Prefix 'A successful Refresh clears buffered navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'A successful Refresh stops the prefix timer'
+
+    $navigationTables.SelectedIndex = 0
+    (Get-TestControl $navigationForm 'PreviewButton').PerformClick()
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]'P')
+    Assert-Equal 'P' $interaction.Prefix 'Metadata repopulation accepts a new prefix'
+    (Get-TestControl $navigationForm 'ChangeConnectionButton').PerformClick()
+    Assert-Equal '' $interaction.Prefix 'Confirmed Change Connection clears buffered navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'Confirmed Change Connection stops the prefix timer'
+    $navigationForm.Close()
+    $navigationForm.Dispose()
+    Assert-Equal $true $navigationTimerDisposedState.Value 'Form disposal disposes the output prefix timer'
+    $navigationForm = $null
+}
+finally {
+    if ($null -ne $navigationForm) {
+        $navigationForm.Close()
+        $navigationForm.Dispose()
+    }
 }
 
 # Data Explorer loads its catalog on first activation and previews on demand.

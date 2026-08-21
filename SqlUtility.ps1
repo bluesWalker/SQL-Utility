@@ -626,6 +626,57 @@ function Invoke-SqlUtilityDataExplorerOutputColumnMouseDown {
     }
 }
 
+function Reset-SqlUtilityDataExplorerOutputColumnNavigation {
+    param([System.Windows.Forms.Form] $Form)
+
+    $interaction = $Form.Tag.DataExplorerOutputInteraction
+    $interaction.Prefix = ''
+    if ($null -ne $interaction.ResetTimer) {
+        $interaction.ResetTimer.Stop()
+    }
+}
+
+function Find-SqlUtilityDataExplorerOutputColumnPrefix {
+    param(
+        [System.Windows.Forms.CheckedListBox] $OutputList,
+        [string] $Prefix
+    )
+
+    for ($index = 0; $index -lt $OutputList.Items.Count; $index++) {
+        $name = [string] $OutputList.Items[$index].Name
+        if ($name.StartsWith($Prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $index
+        }
+    }
+    return -1
+}
+
+function Invoke-SqlUtilityDataExplorerOutputColumnKeyPress {
+    param(
+        [System.Windows.Forms.Form] $Form,
+        [System.Windows.Forms.KeyPressEventArgs] $EventArgs
+    )
+
+    if ([char]::IsControl($EventArgs.KeyChar)) { return }
+    $EventArgs.Handled = $true
+
+    $interaction = $Form.Tag.DataExplorerOutputInteraction
+    $interaction.ResetTimer.Stop()
+    $character = [string] $EventArgs.KeyChar
+    $candidate = [string] $interaction.Prefix + $character
+    $outputList = Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
+    $match = Find-SqlUtilityDataExplorerOutputColumnPrefix $outputList $candidate
+    if ($match -lt 0) {
+        $candidate = $character
+        $match = Find-SqlUtilityDataExplorerOutputColumnPrefix $outputList $candidate
+    }
+    if ($match -ge 0) {
+        $outputList.SelectedIndex = $match
+    }
+    $interaction.Prefix = $candidate
+    $interaction.ResetTimer.Start()
+}
+
 function Resize-SqlUtilityDataExplorerFilterRows {
     param([System.Windows.Forms.Form] $Form)
     $panel = Get-SqlUtilityNamedControl $Form 'DataExplorerFiltersPanel'
@@ -683,12 +734,12 @@ function Invoke-SqlUtilityDataExplorerSendToQuery {
 
 function Invoke-SqlUtilityLoadDataExplorerTables {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;if($s.IsBusy){return};Set-SqlUtilityBusy $Form $true 'Loading tables...';try{$fn=$s.Services.ListPhysicalTables;$tables=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.Config.queryExportTimeoutSeconds);$old=$s.DataExplorerBuilder.Table;$s.DataExplorerTables=$tables;$s.DataExplorerTablesLoaded=$true;if($old){$m=@($tables|?{[int]$_.ObjectId-eq[int]$old.ObjectId});$s.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$(if($m.Count){$m[0]}else{$null});Columns=@();SelectedColumnNames=@();Filters=@()}};(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items.Clear();Clear-SqlUtilityDataExplorerFilterRows $Form;(Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=($null-ne$s.DataExplorerBuilder.Table);Update-SqlUtilityDataExplorerTableList $Form}catch{Show-SqlUtilityMessage $s ("Tables could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
+    $s=$Form.Tag;if($s.IsBusy){return};Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;Set-SqlUtilityBusy $Form $true 'Loading tables...';try{$fn=$s.Services.ListPhysicalTables;$tables=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.Config.queryExportTimeoutSeconds);$old=$s.DataExplorerBuilder.Table;$s.DataExplorerTables=$tables;$s.DataExplorerTablesLoaded=$true;if($old){$m=@($tables|?{[int]$_.ObjectId-eq[int]$old.ObjectId});$s.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$(if($m.Count){$m[0]}else{$null});Columns=@();SelectedColumnNames=@();Filters=@()}};(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items.Clear();Clear-SqlUtilityDataExplorerFilterRows $Form;(Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=($null-ne$s.DataExplorerBuilder.Table);Update-SqlUtilityDataExplorerTableList $Form}catch{Show-SqlUtilityMessage $s ("Tables could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
 }
 
 function Invoke-SqlUtilityDataExplorerPreview {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;$out.Items.Clear();Invoke-SqlUtilityDataExplorerOutputCheckChange $Form {foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)}}.GetNewClosure();$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$filters=@(Get-SqlUtilityDataExplorerFilters $Form);$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names $filters $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$s.DataExplorerBuilder.SelectedColumnNames=$names;$s.DataExplorerBuilder.Filters=$filters;$candidate=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityDataExplorerPreviewDisplay $Form $candidate} catch {Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
+    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;$out.Items.Clear();Invoke-SqlUtilityDataExplorerOutputCheckChange $Form {foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)}}.GetNewClosure();$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$filters=@(Get-SqlUtilityDataExplorerFilters $Form);$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names $filters $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$s.DataExplorerBuilder.SelectedColumnNames=$names;$s.DataExplorerBuilder.Filters=$filters;$candidate=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityDataExplorerPreviewDisplay $Form $candidate} catch {Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
 }
 
 function Set-SqlUtilityDataExplorerPreviewDisplay {
@@ -944,6 +995,7 @@ function Reset-SqlUtilityWorkspaceState {
     $state.DataExplorerPreview = $null
     $state.DataExplorerFilterRowNumber = 0
     (Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text=''
+    Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form
     foreach($listName in @('PhysicalTablesList','OutputColumnsList')){(Get-SqlUtilityNamedControl $Form $listName).Items.Clear()}
     Clear-SqlUtilityDataExplorerFilterRows $Form
     $previewGrid=Get-SqlUtilityNamedControl $Form 'PreviewGrid';$previewGrid.DataSource=$null;$previewGrid.Columns.Clear()
@@ -1042,6 +1094,16 @@ function New-SqlUtilityMainForm {
         DataExplorerFilterRowNumber = 0
     }
     $form.Tag = $state
+    $outputNavigationTimer = [System.Windows.Forms.Timer]::new()
+    $outputNavigationTimer.Interval = 1000
+    $state.DataExplorerOutputInteraction.ResetTimer = $outputNavigationTimer
+    $outputNavigationTimer.Add_Tick({
+        Reset-SqlUtilityDataExplorerOutputColumnNavigation $form
+    }.GetNewClosure())
+    $form.Add_Disposed({
+        $outputNavigationTimer.Stop()
+        $outputNavigationTimer.Dispose()
+    }.GetNewClosure())
 
     $statusLabel = [System.Windows.Forms.Label]::new()
     $statusLabel.Name = 'MainStatusLabel'
@@ -1458,6 +1520,7 @@ function New-SqlUtilityMainForm {
             $currentTable=$form.Tag.DataExplorerBuilder.Table
             if($null-eq$currentTable-or[int]$currentTable.ObjectId-ne[int]$tables.SelectedItem.ObjectId){
                 $form.Tag.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$tables.SelectedItem;Columns=@();SelectedColumnNames=@();Filters=@()}
+                Reset-SqlUtilityDataExplorerOutputColumnNavigation $form
                 $outputs.Items.Clear()
                 Clear-SqlUtilityDataExplorerFilterRows $form
             }
@@ -1473,6 +1536,7 @@ function New-SqlUtilityMainForm {
     $clearFilters.Add_Click({Clear-SqlUtilityDataExplorerFilterRows $form}.GetNewClosure())
     $send.Add_Click({Invoke-SqlUtilityDataExplorerSendToQuery $form}.GetNewClosure())
     $outputs.Add_MouseDown({Invoke-SqlUtilityDataExplorerOutputColumnMouseDown $form $_}.GetNewClosure())
+    $outputs.Add_KeyPress({Invoke-SqlUtilityDataExplorerOutputColumnKeyPress $form $_}.GetNewClosure())
     $outputs.Add_ItemCheck({
         if (-not $form.Tag.DataExplorerOutputInteraction.AllowCheckChange) {
             $_.NewValue = $_.CurrentValue

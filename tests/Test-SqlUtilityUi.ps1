@@ -11,6 +11,26 @@ function Get-TestControl($Root, [string] $Name) {
     return $matches[0]
 }
 
+function Invoke-TestProtectedControlEvent($Control, [string] $MethodName, [System.EventArgs] $EventArgs) {
+    $flags = [System.Reflection.BindingFlags]::Instance -bor [System.Reflection.BindingFlags]::NonPublic
+    $method = $Control.GetType().GetMethod($MethodName, $flags)
+    Assert-True ($null -ne $method) "$($Control.GetType().Name) exposes $MethodName"
+    [void] $method.Invoke($Control, @($EventArgs))
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
+function Invoke-TestOutputColumnClick($Form, [int] $Index, [switch] $Text) {
+    $list = Get-TestControl $Form 'OutputColumnsList'
+    $rectangle = $list.GetItemRectangle($Index)
+    $checkWidth = [System.Windows.Forms.SystemInformation]::MenuCheckSize.Width
+    $x = if ($Text) { $rectangle.Left + $checkWidth + 8 } else { $rectangle.Left + [Math]::Max(1, [Math]::Floor($checkWidth / 2)) }
+    $y = $rectangle.Top + [Math]::Max(1, [Math]::Floor($rectangle.Height / 2))
+    $eventArgs = [System.Windows.Forms.MouseEventArgs]::new(
+        [System.Windows.Forms.MouseButtons]::Left, 1, $x, $y, 0
+    )
+    Invoke-TestProtectedControlEvent $list 'OnMouseDown' $eventArgs
+}
+
 function Assert-TestControlContained($Control, [string] $Message) {
     $parent = $Control.Parent
     $contained = $null -ne $parent -and
@@ -1599,6 +1619,22 @@ try {
     Assert-Equal 1 $explorerHarness.Recorder.BuildExplorerCalls.Count 'First Preview builds one query'
     Assert-Equal 1 $explorerHarness.Recorder.PreviewCalls.Count 'First Preview executes one bounded query'
     Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
+    $outputList = Get-TestControl $explorerForm 'OutputColumnsList'
+    $initialCheckedNames = @($outputList.CheckedItems | ForEach-Object Name) -join ','
+    Assert-Equal $false $outputList.CheckOnClick 'Output text clicks cannot use native check-on-click behavior'
+
+    Invoke-TestOutputColumnClick $explorerForm 1 -Text
+    Invoke-TestOutputColumnClick $explorerForm 1 -Text
+    Assert-Equal $initialCheckedNames (@($outputList.CheckedItems | ForEach-Object Name) -join ',') `
+        'Repeated output-column text clicks preserve every check'
+
+    Invoke-TestOutputColumnClick $explorerForm 1
+    Assert-Equal $false $outputList.GetItemChecked(1) 'Checkbox glyph click unchecks exactly one column'
+    Invoke-TestOutputColumnClick $explorerForm 1
+    Assert-Equal $true $outputList.GetItemChecked(1) 'Second checkbox glyph click checks exactly once'
+
+    $outputList.SetItemChecked(1, $false)
+    Assert-Equal $true $outputList.GetItemChecked(1) 'Unguarded programmatic or native check changes are rejected'
     Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'First Preview binds returned DataTable'
     Assert-Equal '2 rows displayed (unordered)' (Get-TestControl $explorerForm 'PreviewStatusLabel').Text 'Preview reports exact unordered rows'
     foreach ($column in (Get-TestControl $explorerForm 'PreviewGrid').Columns) {
@@ -1621,7 +1657,7 @@ try {
     $filterOperator2 = Get-TestControl $explorerForm 'FilterOperatorCombo2'
     $filterOperator2.SelectedIndex = 2
     (Get-TestControl $explorerForm 'FilterValueText2').Text = 'north'
-    (Get-TestControl $explorerForm 'OutputColumnsList').SetItemChecked(1,$false)
+    Invoke-TestOutputColumnClick $explorerForm 1
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     $filterBuild = $explorerHarness.Recorder.BuildExplorerCalls[$explorerHarness.Recorder.BuildExplorerCalls.Count-1]
     Assert-Equal 'CreatedAt:GreaterThan:2026-01-01,Name:Contains:north' (@($filterBuild.Filters | ForEach-Object { "$($_.ColumnName):$($_.Operator):$($_.ValueText)" }) -join ',') 'Preview sends ordered neutral filters'
@@ -1685,9 +1721,12 @@ try {
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'Later Preview reuses metadata'
     (Get-TestControl $explorerForm 'SelectNoColumnsButton').PerformClick()
+    Assert-Equal 0 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'None clears every output-column check'
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     Assert-Equal 2 $explorerHarness.Recorder.PreviewCalls.Count 'No columns prevents preview execution'
     Assert-True ([object]::ReferenceEquals($explorerHarness.Recorder.PreviewResult,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Selection changes preserve snapshot'
+    (Get-TestControl $explorerForm 'SelectAllColumnsButton').PerformClick()
+    Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'All checks every output column'
     $previewLimit = Get-TestControl $explorerForm 'PreviewLimitNumeric'
     Assert-Equal 10 ([int] $previewLimit.Minimum) 'Preview limit minimum is 10'
     Assert-Equal 500 ([int] $previewLimit.Maximum) 'Preview limit maximum is 500'
@@ -1738,7 +1777,7 @@ try {
     $snapshotA=$previewExportForm.Tag.DataExplorerPreview;$sourceA=(Get-TestControl $previewExportForm 'PreviewSourceLabel').Text
     $exportPreviewButton=Get-TestControl $previewExportForm 'ExportPreviewButton'
     Assert-Equal $true $exportPreviewButton.Enabled 'Successful Preview enables Export Preview'
-    (Get-TestControl $previewExportForm 'OutputColumnsList').SetItemChecked(0,$false)
+    Invoke-TestOutputColumnClick $previewExportForm 0
     (Get-TestControl $previewExportForm 'AddFilterButton').PerformClick()
     (Get-TestControl $previewExportForm 'FilterValueText1').Text='snapshot-independent-filter'
     (Get-TestControl $previewExportForm 'PhysicalTablesList').SelectedIndex=1

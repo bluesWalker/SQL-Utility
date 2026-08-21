@@ -1720,6 +1720,10 @@ try {
     $explorerHarness.Recorder.BuildExplorerError=$null
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()
     Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'Later Preview reuses metadata'
+    (Get-TestControl $explorerForm 'WorkspaceTabs').SelectedTab = Get-TestControl $explorerForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    Assert-Equal $true (Get-TestControl $explorerForm 'SelectNoColumnsButton').Visible `
+        'None action is exercised from the visible Data Explorer tab'
     (Get-TestControl $explorerForm 'SelectNoColumnsButton').PerformClick()
     Assert-Equal 0 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'None clears every output-column check'
     (Get-TestControl $explorerForm 'PreviewButton').PerformClick()

@@ -46,10 +46,10 @@ Data Explorer is a new workspace tab beside Query and Settings. Its layout has:
 
 1. A left table pane with a table-name filter, Refresh action, bare `dbo` table names, and `schema.table` names for other schemas.
 2. An upper-right builder area containing the checked output-column list and structured filter rows.
-3. A toolbar containing Preview, Export Preview, and Send to Query.
+3. A shared toolbar with compact All and None actions on the left and Preview, Export Preview, and Send to Query aligned on the right.
 4. A lower-right read-only preview grid and a header that identifies the source table and displayed row count.
 
-The table and column panes scroll vertically. The output-column control's checkbox and typed-prefix behavior is owned by the [Column Selection Navigation Design](2026-08-15-sql-utility-column-selection-navigation-design.md); no instructional label or search box is added. All and None actions update output selection without changing the displayed preview.
+The table and column panes scroll vertically. The output-column control's checkbox and typed-prefix behavior is owned by the [Column Selection Navigation Design](2026-08-15-sql-utility-column-selection-navigation-design.md); no instructional label or search box is added. Compact All and None actions share the toolbar row with the preview actions and update output selection without changing the displayed preview. Filter rows remain above the toolbar in their independently scrolling editor.
 
 The preview grid reuses the Query tab's neutral `DataTable` binding, empty-result handling, read-only behavior, cell selection/copy behavior, and 300-pixel column-width cap. It does not reuse Query-tab paging, Count, Export eligibility, or editor-staleness logic.
 

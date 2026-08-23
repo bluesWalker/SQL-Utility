@@ -1492,6 +1492,41 @@ try {
     }
     [System.Windows.Forms.Application]::DoEvents()
 
+    $actionLayout = Get-TestControl $layoutForm 'DataExplorerActionLayout'
+    $allButton = Get-TestControl $layoutForm 'SelectAllColumnsButton'
+    $noneButton = Get-TestControl $layoutForm 'SelectNoColumnsButton'
+    $previewButton = Get-TestControl $layoutForm 'PreviewButton'
+    $exportPreviewButton = Get-TestControl $layoutForm 'ExportPreviewButton'
+    $sendToQueryButton = Get-TestControl $layoutForm 'SendToQueryButton'
+    foreach ($button in @($allButton, $noneButton, $previewButton, $exportPreviewButton, $sendToQueryButton)) {
+        Assert-True ([object]::ReferenceEquals($button.Parent, $actionLayout)) `
+            "$($button.Name) is owned by the shared Data Explorer toolbar"
+        Assert-Equal 0 $actionLayout.GetRow($button) `
+            "$($button.Name) remains on the single toolbar row"
+        Assert-TestControlContained $button "$($button.Name) remains visible when filter rows overflow"
+    }
+    Assert-Equal ([System.Windows.Forms.DockStyle]::None) $allButton.Dock `
+        'All uses its compact native width'
+    Assert-Equal ([System.Windows.Forms.DockStyle]::None) $noneButton.Dock `
+        'None uses its compact native width'
+    Assert-True ($allButton.Width -lt $previewButton.Width -and
+        $noneButton.Width -lt $previewButton.Width) `
+        'All and None stay visibly compact beside the preview actions'
+    Assert-True ($allButton.Left -lt $noneButton.Left) 'All precedes None on the left'
+    Assert-True ($noneButton.Right -lt $previewButton.Left) `
+        'The flexible toolbar space separates column actions from preview actions'
+    Assert-True ($previewButton.Left -lt $exportPreviewButton.Left -and
+        $exportPreviewButton.Left -lt $sendToQueryButton.Left) `
+        'Preview actions retain their order on the right'
+    Assert-True (($actionLayout.ClientSize.Width - $sendToQueryButton.Right) -le
+        $sendToQueryButton.Margin.Right) 'Send to Query is aligned to the toolbar right edge'
+    Assert-True ([object]::ReferenceEquals(
+        $filtersPanel.Parent,
+        (Get-TestControl $layoutForm 'DataExplorerFiltersLayout')
+    )) 'Filter rows remain owned by the unchanged filter editing section'
+    Assert-Equal $true $filtersPanel.VerticalScroll.Visible `
+        'Filter editing automatically scrolls before overflowing into the toolbar'
+
     $tableList.TopIndex = 10
     $outputList.TopIndex = 10
     $filtersPanel.AutoScrollPosition = [System.Drawing.Point]::new(0, 40)
@@ -1759,6 +1794,8 @@ try {
         'Table pane is left of the main Data Explorer area'
     Assert-Equal ([System.Windows.Forms.Orientation]::Horizontal) $rightSplit.Orientation `
         'Builder is above Preview'
+    Assert-Equal 10 $rightSplit.SplitterWidth `
+        'Builder and Preview use a 10-pixel remote-friendly splitter'
     Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $builderSplit.Orientation `
         'Columns are left of filters'
     Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $mainSplit.FixedPanel `

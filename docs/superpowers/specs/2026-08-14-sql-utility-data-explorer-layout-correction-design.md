@@ -25,7 +25,9 @@ This correction includes only:
 
 - A responsive left table pane.
 - An upper-right builder split into output columns on the left and filters on the right.
+- A single builder toolbar with compact column-selection actions on the left and preview actions on the right.
 - A lower-right preview pane.
+- A 10-pixel builder/preview splitter that is easier to drag over a remote connection.
 - Visible vertical scrolling for tables, output columns, and filters.
 - Visible horizontal and vertical scrolling for the preview grid.
 - Default-size and minimum-size layout regression coverage.
@@ -54,19 +56,20 @@ DataExplorerTab
       │  └─ TableLayoutPanel
       │     ├─ DataExplorerBuilderSplit (vertical)
       │     │  ├─ output-column pane
-      │     │  │  ├─ OutputColumnsList (fill)
-      │     │  │  └─ All + None
+      │     │  │  └─ OutputColumnsList (fill)
       │     │  └─ filter pane
       │     │     ├─ Add Filter + Clear
       │     │     └─ DataExplorerFiltersPanel (fill)
-      │     └─ Preview + Export Preview + Send to Query
+      │     └─ All + None | flexible space | Preview + Export Preview + Send to Query
       └─ Panel2: lower preview
          └─ TableLayoutPanel
             ├─ PreviewSourceLabel + PreviewStatusLabel
             └─ PreviewGrid (fill)
 ```
 
-All root containers and content controls use `Dock = Fill`. Split containers remain user-adjustable, use `FixedPanel = None`, and define minimum panel sizes that keep their contained actions usable. Initial splitter distances favor a compact table pane, a larger filter pane than output pane, and approximately balanced builder/preview heights at the default window size.
+All root containers and content controls use `Dock = Fill`. Split containers remain user-adjustable, use `FixedPanel = None`, and define minimum panel sizes that keep their contained actions usable. The horizontal builder/preview splitter is 10 pixels wide. Initial splitter distances favor a compact table pane, a larger filter pane than output pane, and approximately balanced builder/preview heights at the default window size.
+
+All and None use their compact native widths at the left of the shared toolbar. A percentage-width spacer absorbs the remaining room before Preview, Export Preview, and Send to Query, keeping those actions aligned to the right. The filter editor remains entirely above the toolbar; adding rows cannot displace or overlap its actions.
 
 No control is anchored directly to an unlaid-out `TabPage`.
 
@@ -75,6 +78,7 @@ No control is anchored directly to an unlaid-out `TabPage`.
 - `PhysicalTablesList` uses its native vertical list scrollbar and no horizontal scrollbar.
 - `OutputColumnsList` uses its native vertical checked-list scrollbar and no horizontal scrollbar.
 - `DataExplorerFiltersPanel` scrolls vertically. Dynamic filter rows size to the panel client width and do not require horizontal scrolling.
+- Filter scrolling activates automatically when added rows exceed the editor viewport, while the shared toolbar remains visible below it.
 - Each filter row remains a `TableLayoutPanel`, but column, operator, value, and Remove controls share the available row width. Text and bit value controls occupy the same value cell because only one is visible at a time.
 - `PreviewGrid.ScrollBars` is explicitly `Both`. Its existing 300-pixel column-width cap remains unchanged so wide schemas scroll horizontally rather than forcing the grid outside its pane.
 
@@ -105,10 +109,12 @@ Reparenting and resizing must not trigger database work, change checked output c
 Extend `tests/Test-SqlUtilityUi.ps1` with regression-first tests that fail against the flat anchored layout and assert real control behavior:
 
 - Named split/layout containers exist with the approved orientation and parent hierarchy.
+- The builder/preview splitter is 10 pixels wide, and all five toolbar actions remain on one row with compact All/None actions on the left and preview actions on the right.
 - At minimum `760 x 520`, default `960 x 680`, intermediate, and enlarged window sizes, the table list, output list, filter panel, and preview grid bounds are fully contained by their immediate parent client rectangles.
 - Repeated shrink, expand, and shrink cycles preserve containment, visible scrollbar ownership, builder/preview state, and the current scroll position when the content still requires scrolling.
 - Moving each splitter to its allowed minimum and maximum distances preserves pane containment and does not reset or rebind Data Explorer controls.
 - After enough table/column/filter/preview content is added, table, output, and filter scrolling remains vertical-only and visible within its pane; the preview grid is configured for both directions and remains contained.
+- Adding filter rows until the editor overflows enables its vertical scroller without moving or covering the shared toolbar.
 - Filter rows resize with the filter panel, retain visual order and values, and do not introduce a horizontal scrollbar.
 - Existing first/later Preview, filter, Send, snapshot, Export Preview, refresh, and connection-reset tests remain unchanged and pass.
 

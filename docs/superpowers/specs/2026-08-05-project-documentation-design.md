@@ -2,121 +2,93 @@
 
 ## Purpose
 
-Create two repository-root documents that explain the completed SQL Utility v1 implementation and guide future work:
+Use three repository-root documents with distinct audiences:
 
-- `README.md` is the primary project, usage, design, and implementation reference.
-- `AGENTS.md` contains concise repository-wide instructions for AI coding agents while remaining readable and useful to human maintainers.
+- `README.md` is the end-user manual displayed on the repository home page.
+- `TECHNICAL_REFERENCE.md` is the detailed project, implementation, architecture, verification, and maintainer reference. It was created from the previous combined README so that content was preserved when the user manual became the primary README.
+- `AGENTS.md` contains binding repository-wide instructions for coding agents while remaining readable by human maintainers.
 
-The documents must describe the current implementation at the feature-branch head. They must not repeat obsolete implementation snippets from the original plan or claim that external Citrix acceptance has been completed.
+The documents describe current behavior. They must not repeat obsolete implementation snippets or claim that external Citrix acceptance has been completed.
 
-## Documentation Model
+## Documentation model
 
-Use a layered model to reduce duplication and maintenance drift.
+Use a layered model to reduce duplication and maintenance drift:
 
-`README.md` owns explanatory material: what the application does, how to run it, how its components interact, why key boundaries exist, and how to test it. `AGENTS.md` owns binding repository instructions: what an agent must preserve, how it should make and verify changes, and which documents provide deeper context.
+- The user manual owns installation, connection, saved-connection management, every application tab, paging, counting, export, settings, user-visible limits, and troubleshooting.
+- The technical reference owns the implementation overview, module boundaries, configuration details, query-policy grammar, security and persistence boundaries, test commands, external acceptance checks, and future engineering work.
+- `AGENTS.md` owns rules contributors must preserve and links to the user manual, technical reference, and deeper design documents.
 
-`AGENTS.md` links to `README.md` and the existing v1 design and implementation plan instead of restating their detailed explanations. When a product or architecture contract changes, the responsible change must update the affected documentation in the same work.
+The README must link prominently to `TECHNICAL_REFERENCE.md`. Both files remain at the repository root so users can reach the technical reference from the GitHub repository home page and see it in the root file list.
 
-## README.md Design
+## README.md requirements
 
 ### Audience
 
-The README serves three audiences:
+The README is written for people who install and operate SQL Utility, including internal users running it in Citrix. It must not require knowledge of the codebase.
 
-1. Internal users copying and launching the portable application in Citrix.
-2. Maintainers who need to understand the architecture and constraints.
-3. Coding agents that need a reliable entry point before reading deeper design material.
+### Required content
 
-### Required Content
+The README contains only information needed to use the application:
 
-The README contains:
+- What SQL Utility does and its read-only purpose.
+- The exact seven-file portable layout, runtime requirement, and launch steps.
+- How app-folder write access affects saved connections and settings.
+- Windows-authenticated connection testing, connecting, saved pairs, deletion, and changing connections.
+- Complete Data Explorer instructions: table discovery/filtering/refresh, output-column interactions, structured filters, previews, preview export, and Query handoff.
+- Complete Query instructions: supported user-facing statement shape, execution, stale results, ordered and unordered paging, explicit counts, and complete-result export.
+- Complete Settings instructions with current ranges, defaults, and effects.
+- User-facing limits, performance cautions, persistence expectations, and troubleshooting.
+- A prominent link to `TECHNICAL_REFERENCE.md` for non-user material.
 
-- A concise introduction and version 1 capability summary.
-- Runtime requirements and portability guarantees.
-- The exact portable distribution layout and launch instructions.
-- The end-user workflow for connection testing, connecting, query execution, paging, export, settings, saved connections, and changing connections.
-- The Data Explorer workflow for physical-table discovery, bounded previews, structured filters, preview export, and generated-SQL handoff.
-- A detailed implementation overview with a compact Mermaid component/data-flow diagram.
-- The responsibility and dependency boundary of `SqlUtility.ps1` and each file in `modules/`.
-- The application-local schema 2 configuration, schema 1 in-memory migration, validation ranges, persistence location, safe replacement behavior, and explicit list of data that is never stored.
-- The accepted single-table read-only query shape, representative accepted examples, rejected constructs, and the warning that client validation does not replace SQL Server permissions.
-- The two paging models: ordered server-side 500-row pages with a 501-row sentinel, and bounded unordered retrieval with local 500-row display pages.
-- Complete-result Excel export behavior, availability rules, streaming/cached sources, workbook formatting, data-fidelity safeguards, Excel limits, and safe destination replacement.
-- Authentication, security, privacy, filesystem-write, and network-write boundaries.
-- Synchronous execution, timeout, confirmation, and error-handling behavior.
-- The dependency-free PowerShell test layout and focused/aggregate commands.
-- A cloud/Citrix acceptance checklist that remains explicitly pending until performed in that environment.
-- Known version 1 limitations and future extension points, including explicit JOIN grammar as a later policy extension.
-- Links to the authoritative v1 design, v1 implementation plan, and documentation design.
+Do not add architecture diagrams, module ownership, implementation details, developer test commands, internal safe-write algorithms, development plans, or contribution instructions to the README.
 
-### Accuracy Rules
+### Accuracy rules
 
-- Describe final code behavior, including release-review fixes, rather than planned-but-superseded implementation details.
-- Use the actual setting ranges: unordered row limit `100` through `2000`, default `1000`; Query/Export timeout `5` through `3600` seconds, default `120`; fixed connection timeout `10` seconds.
-- State that display pages are fixed at 500 rows.
-- State that server and database fields start blank on every launch even when saved pairs exist.
-- State that `SqlUtility.config.json` is absent from the distribution and is created beside the application only when a successful connection or settings operation needs persistence.
-- State that the application uses Windows integrated authentication only and never stores credentials.
-- Do not claim that Microsoft Excel is required to generate `.xlsx`; desktop Excel is used only for external acceptance/opening the result.
-- Do not claim ordered queries receive a count or total-page calculation.
+- Describe final code behavior rather than plans.
+- Keep button names and tab names identical to the UI.
+- State that server and database fields start blank on every launch.
+- State that authentication uses the signed-in Windows identity and that credentials are not requested or stored.
+- State that Data Explorer previews are bounded, unordered snapshots and that Query export requires a complete result.
+- State that display pages are fixed at 500 rows and counts are explicit.
+- Use the actual setting ranges and defaults.
+- Do not claim that Microsoft Excel is required to generate `.xlsx` files.
 
-## AGENTS.md Design
+## TECHNICAL_REFERENCE.md requirements
 
-### Audience and Authority
+The technical reference preserves and maintains the detailed material previously owned by README:
 
-`AGENTS.md` is primarily a binding instruction file for AI coding agents operating anywhere in this repository. Its language remains plain enough for human contributors to understand the rationale and expected checks.
+- Capability and runtime summaries.
+- Architecture, module ownership, and data flow.
+- Configuration schema, migration, and safe persistence.
+- Data Explorer and query-policy contracts.
+- Paging, count, and export implementation behavior.
+- Authentication, security, filesystem, network, and resource-lifecycle boundaries.
+- Error handling and synchronous runtime behavior.
+- Automated verification commands and the pending Citrix acceptance checklist.
+- Version limitations, future extensions, and design references.
 
-The file applies repository-wide unless a future nested `AGENTS.md` introduces more specific instructions for a subtree.
+When user-visible behavior changes, update both the README instructions and the corresponding technical contract where applicable. Prefer links over duplicating long internal explanations in README.
 
-### Required Instructions
+## AGENTS.md requirements
 
-Agents must:
+`AGENTS.md` must direct contributors to read README for user behavior and `TECHNICAL_REFERENCE.md` for implementation details. It must preserve the runtime, architecture, authentication, query-safety, persistence, verification, Git, and external-acceptance rules of the repository.
 
-- Read `README.md` and the relevant design/plan documents before modifying behavior.
-- Preserve the portable `StartSqlUtility.cmd` to Windows PowerShell 5.1 launch model.
-- Use only Windows and .NET Framework components normally available in the target Citrix environment.
-- Avoid third-party dependencies, installation, compiled executables, administrator access, Office automation, registry writes, and environment-variable writes.
-- Preserve Windows integrated authentication and never introduce, request, log, or persist credentials.
-- Respect the established module boundaries among UI/workflow, configuration, query policy, database access, and Excel export.
-- Preserve the UI-neutral Data Explorer module boundary: catalog-derived identifiers and typed builder/preview descriptors belong there, while SQL execution and WinForms remain outside it.
-- Treat the query policy as a safety boundary and obtain explicit approval before widening the single-statement, single-table, read-only `SELECT` scope.
-- Preserve ordered/unordered paging semantics, complete-export eligibility, timeout enforcement, Excel limits, data fidelity, resource disposal, and safe file replacement.
-- Limit persistence to validated app-local configuration/transient files and user-selected Excel destinations.
-- Keep changes minimal and scoped; avoid unrelated refactoring and speculative features.
-- Use regression-first test-driven development for behavior changes.
-- Run the focused test file during development and `tests\Test-All.ps1` before completion.
-- Verify Windows PowerShell 5.1 compatibility, launcher portability where relevant, temporary-file cleanup, `git diff --check`, and worktree status.
-- Preserve unrelated and user-owned files and avoid destructive Git commands unless explicitly authorized.
-- Update the relevant documentation when runtime, architecture, security, persistence, query-policy, paging, export, or verification contracts change.
-- Report live SQL Server, Citrix, cloud-drive, and desktop Excel checks as external acceptance unless they were actually performed in that environment.
-
-### Reference Strategy
-
-`AGENTS.md` links to:
-
-- `README.md` for the current application overview, architecture, workflows, and commands.
-- `docs/superpowers/specs/2026-08-02-sql-utility-v1-design.md` for the approved v1 product design.
-- `docs/superpowers/plans/2026-08-02-sql-utility-v1.md` for implementation history and task decomposition.
-- `docs/superpowers/specs/2026-08-05-project-documentation-design.md` for the documentation ownership model.
-- `docs/superpowers/specs/2026-08-14-sql-utility-data-explorer-design.md` for the Data Explorer, schema 2, and seven-file runtime extension.
-
-References are relative Markdown links so they work in local repository viewers and hosted Git forges.
+Its Documentation Maintenance section must keep ownership explicit: user-facing operating content belongs in README, while implementation, architecture, security, and verification content belongs in the technical reference.
 
 ## Verification
 
-Documentation implementation is complete only when:
+Documentation changes are complete only when:
 
-- Both files exist at the repository root.
-- All referenced paths and commands exist in the checkout.
-- The README distribution tree exactly matches the seven runtime files.
-- Data Explorer architecture, `previewRowLimit`, and `tests\Test-DataExplorer.ps1` ownership match the extension design, production code, and aggregate runner.
-- Setting ranges, defaults, timeouts, paging limits, Excel limits, and persistence behavior match production code and tests.
+- `README.md`, `TECHNICAL_REFERENCE.md`, and `AGENTS.md` exist at the repository root.
+- README links directly to the technical reference.
+- README contains all current screens and tabs but no maintainer-only sections.
+- Technical details removed from README remain available in the technical reference.
+- All repository-relative Markdown links resolve.
+- Runtime filenames, labels, ranges, defaults, timeouts, paging limits, and Excel limits match production code and tests.
 - No unfinished placeholder markers remain.
-- `AGENTS.md` contains direct, testable instructions and does not conflict with `README.md`.
-- Markdown links resolve to repository files.
-- The full PowerShell test suite remains green even though the change is documentation-only.
+- The full PowerShell test suite remains green.
 - `git diff --check` reports no whitespace errors.
 
-## Scope Boundaries
+## Scope boundaries
 
-This documentation work does not change application behavior, packaging, configuration schema, query grammar, user interface, or tests. It does not merge the feature branch or complete the pending Citrix acceptance tests.
+This documentation model does not change application behavior, packaging, configuration schema, query grammar, user interface, or tests. It does not merge a branch or complete pending Citrix acceptance tests.

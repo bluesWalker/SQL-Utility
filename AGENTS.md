@@ -2,7 +2,7 @@
 
 ## Project Context
 
-SQL Utility is a portable internal Windows PowerShell 5.1 WinForms client for Windows-authenticated SQL Server connection testing, constrained physical-table exploration, restricted read-only querying, result paging, and dependency-free `.xlsx` export. Read [README.md](README.md) for current user behavior, architecture, and operating instructions.
+SQL Utility is a portable internal Windows PowerShell 5.1 WinForms client for Windows-authenticated SQL Server connection testing, constrained physical-table exploration, restricted read-only querying, result paging, and dependency-free `.xlsx` export. Read the [User Manual](README.md) for current operating instructions and the [Technical Reference](TECHNICAL_REFERENCE.md) for architecture and implementation details.
 
 ## Instruction Scope
 
@@ -14,11 +14,12 @@ This file is written primarily for AI coding agents. Its requirements are also t
 
 Before changing behavior, read:
 
-1. [README.md](README.md) for the current implementation and commands.
-2. [SQL Utility Version 1 Design](docs/superpowers/specs/2026-08-02-sql-utility-v1-design.md) for approved product and architecture boundaries.
-3. [SQL Utility Version 1 Implementation Plan](docs/superpowers/plans/2026-08-02-sql-utility-v1.md) when historical task decomposition or design rationale is relevant. Treat final code and newer review fixes as authoritative over superseded plan snippets.
-4. [Project Documentation Design](docs/superpowers/specs/2026-08-05-project-documentation-design.md) when changing documentation ownership or structure.
-5. [SQL Utility Data Explorer Design](docs/superpowers/specs/2026-08-14-sql-utility-data-explorer-design.md) when changing Data Explorer behavior, configuration, architecture, or tests.
+1. [README.md](README.md) for current end-user behavior and operating instructions.
+2. [TECHNICAL_REFERENCE.md](TECHNICAL_REFERENCE.md) for the current implementation, architecture, constraints, and commands.
+3. [SQL Utility Version 1 Design](docs/superpowers/specs/2026-08-02-sql-utility-v1-design.md) for approved product and architecture boundaries.
+4. [SQL Utility Version 1 Implementation Plan](docs/superpowers/plans/2026-08-02-sql-utility-v1.md) when historical task decomposition or design rationale is relevant. Treat final code and newer review fixes as authoritative over superseded plan snippets.
+5. [Project Documentation Design](docs/superpowers/specs/2026-08-05-project-documentation-design.md) when changing documentation ownership or structure.
+6. [SQL Utility Data Explorer Design](docs/superpowers/specs/2026-08-14-sql-utility-data-explorer-design.md) when changing Data Explorer behavior, configuration, architecture, or tests.
 
 Inspect the relevant production code and tests before proposing a change. Do not infer current behavior from filenames or old plans alone.
 
@@ -118,7 +119,8 @@ Do not claim that work is complete or passing without fresh command output from 
 
 Keep documentation synchronized with the contract it owns:
 
-- Update `README.md` when user workflow, runtime files, settings, architecture, Data Explorer, query policy, paging, export, security, testing, or limitations change.
+- Update `README.md` when installation or user-visible connection, tab, paging, export, settings, troubleshooting, or usage limitations change. Keep it user-oriented.
+- Update `TECHNICAL_REFERENCE.md` when runtime files, architecture, configuration internals, Data Explorer, query policy, paging, export, security, testing, external acceptance, or implementation limitations change.
 - Update the Data Explorer design before materially changing its physical-table scope, filter grammar/type matrix, preview/snapshot behavior, generated SQL, or configuration contract.
 - Update the approved design before implementing a material product/architecture scope change.
 - Update implementation plans when future work is decomposed, but do not present stale plan snippets as current behavior.

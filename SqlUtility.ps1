@@ -626,6 +626,25 @@ function Invoke-SqlUtilityDataExplorerOutputColumnMouseDown {
     }
 }
 
+function Invoke-SqlUtilityDataExplorerOutputColumnMouseDoubleClick {
+    param(
+        [System.Windows.Forms.Form] $Form,
+        [System.Windows.Forms.MouseEventArgs] $EventArgs
+    )
+
+    if ($EventArgs.Button -ne [System.Windows.Forms.MouseButtons]::Left) { return }
+    $outputList = Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
+    $index = $outputList.IndexFromPoint($EventArgs.Location)
+    if ($index -lt 0) { return }
+
+    $rectangle = $outputList.GetItemRectangle($index)
+    $checkRight = $rectangle.Left + [System.Windows.Forms.SystemInformation]::MenuCheckSize.Width
+    if ($EventArgs.X -ge $checkRight) {
+        $outputList.SelectedIndex = $index
+        Set-SqlUtilityDataExplorerOutputColumnChecked $Form $index (-not $outputList.GetItemChecked($index))
+    }
+}
+
 function Reset-SqlUtilityDataExplorerOutputColumnNavigation {
     param([System.Windows.Forms.Form] $Form)
 
@@ -658,7 +677,17 @@ function Invoke-SqlUtilityDataExplorerOutputColumnKeyPress {
     )
 
     $outputList = Get-SqlUtilityNamedControl $Form 'OutputColumnsList'
-    if (-not $outputList.Focused -or [char]::IsControl($EventArgs.KeyChar)) { return }
+    if (-not $outputList.Focused) { return }
+    if ($EventArgs.KeyChar -eq [char]' ') {
+        $EventArgs.Handled = $true
+        Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form
+        $index = $outputList.SelectedIndex
+        if ($index -ge 0) {
+            Set-SqlUtilityDataExplorerOutputColumnChecked $Form $index (-not $outputList.GetItemChecked($index))
+        }
+        return
+    }
+    if ([char]::IsControl($EventArgs.KeyChar)) { return }
     $EventArgs.Handled = $true
 
     $interaction = $Form.Tag.DataExplorerOutputInteraction
@@ -1537,6 +1566,7 @@ function New-SqlUtilityMainForm {
     $clearFilters.Add_Click({Clear-SqlUtilityDataExplorerFilterRows $form}.GetNewClosure())
     $send.Add_Click({Invoke-SqlUtilityDataExplorerSendToQuery $form}.GetNewClosure())
     $outputs.Add_MouseDown({Invoke-SqlUtilityDataExplorerOutputColumnMouseDown $form $_}.GetNewClosure())
+    $outputs.Add_MouseDoubleClick({Invoke-SqlUtilityDataExplorerOutputColumnMouseDoubleClick $form $_}.GetNewClosure())
     $form.Add_KeyPress({Invoke-SqlUtilityDataExplorerOutputColumnKeyPress $form $_}.GetNewClosure())
     $outputs.Add_ItemCheck({
         if (-not $form.Tag.DataExplorerOutputInteraction.AllowCheckChange) {

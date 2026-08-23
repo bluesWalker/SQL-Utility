@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Correct the Data Explorer output-column list so navigation never changes output checks, while preserving fast keyboard access for tables with many columns. A user can type a column-name prefix such as `PROD` to reach `ProductID`, and only a checkbox-glyph click or the existing All/None actions can change checked output columns.
+Correct the Data Explorer output-column list so prefix navigation never changes output checks, while preserving fast keyboard access for tables with many columns. A user can type a column-name prefix such as `PROD` to reach `ProductID`, then press Space to toggle the highlighted column. Checkbox-glyph clicks, column-text double-clicks, Space, and the existing All/None actions are the explicit ways to change checked output columns.
 
 This specification extends the approved [SQL Utility Data Explorer Design](2026-08-14-sql-utility-data-explorer-design.md). It replaces only that design's standard `CheckedListBox` matching-navigation contract. All table discovery, metadata, builder, preview, filter, export, query-handoff, layout, persistence, and module boundaries remain unchanged.
 
@@ -21,8 +21,10 @@ The exact approved interaction therefore cannot be obtained from a `CheckedListB
 
 - Output columns still default to all checked after the first Preview.
 - Clicking directly on a checkbox glyph toggles that column once.
-- Clicking column text may move the list highlight, but it never changes any checkbox.
-- Keyboard navigation never changes any checkbox.
+- Single-clicking column text may move the list highlight, but it never changes any checkbox.
+- Double-clicking column text highlights that row and toggles its checkbox once.
+- Pressing Space while the output list has focus toggles the currently highlighted column and clears the buffered prefix.
+- Other keyboard navigation never changes any checkbox.
 - Printable typed characters accumulate into a case-insensitive column-name prefix while the output list has focus.
 - The prefix buffer resets after `1000` milliseconds of inactivity.
 - Matching uses the catalog column `Name`, not its longer display text or SQL type annotation.
@@ -39,13 +41,13 @@ The one-second interval is intentionally easy to adjust after hands-on use, but 
 
 Set `OutputColumnsList.CheckOnClick` to false. Keep one transient, mutable UI state object that records whether an application-owned check change is currently permitted.
 
-The list's `ItemCheck` handler cancels any state change unless that guard is active. Checkbox-glyph clicks and the existing All/None handlers activate the guard only around their synchronous `SetItemChecked` calls and restore it in `finally`. Initial metadata population uses the same guarded path when adding or checking items.
+The list's `ItemCheck` handler cancels any state change unless that guard is active. Checkbox-glyph clicks, column-text double-clicks, Space, and the existing All/None handlers activate the guard only around their synchronous `SetItemChecked` calls and restore it in `finally`. Initial metadata population uses the same guarded path when adding or checking items.
 
-This prevents keyboard input, column-text clicks, repeated clicks on a highlighted row, and native space-bar behavior from changing checks. Programmatic changes remain explicit and auditable.
+This prevents prefix input, single column-text clicks, repeated single clicks on a highlighted row, and unowned native behavior from changing checks. Programmatic changes remain explicit and auditable.
 
 ### Checkbox hit testing
 
-The list's mouse handler identifies the item under the pointer with `IndexFromPoint` and its item rectangle. A click counts as a checkbox click only when its X coordinate is at least the item rectangle's left edge and less than that edge plus `SystemInformation.MenuCheckSize.Width`; the application remains left-to-right. A qualifying click selects/highlights the row and toggles it once through the guarded check path. Other clicks retain normal row highlighting but do not change checks.
+The list's mouse handler identifies the item under the pointer with `IndexFromPoint` and its item rectangle. A click counts as a checkbox click only when its X coordinate is at least the item rectangle's left edge and less than that edge plus `SystemInformation.MenuCheckSize.Width`; the application remains left-to-right. A qualifying click selects/highlights the row and toggles it once through the guarded check path. A single click outside the checkbox retains normal row highlighting without changing checks; a left-button double-click outside the checkbox selects the clicked row and toggles it once through the same guarded path.
 
 No owner-drawn list, compiled helper, custom control assembly, or hard-coded unscaled checkbox width is introduced.
 
@@ -53,7 +55,7 @@ No owner-drawn list, compiled helper, custom control assembly, or hard-coded uns
 
 The form uses `KeyPreview = true` and a form-level `KeyPress` handler, gated so it acts only while the output list has focus. This route receives the actual printable `KeyChar` before the checked list's native single-character matching can run, including shifted and OEM punctuation that should participate in the prefix. It consumes the handled character, restarts a WinForms `Timer` with `Interval = 1000`, performs an ordinal-ignore-case prefix search over item `Name` values, and updates only `SelectedIndex` for the first match. The focus gate leaves all other controls' keyboard input unchanged.
 
-The timer tick clears only the prefix buffer. Table/builder reset, metadata repopulation, Refresh, and Change Connection also clear the buffer and stop the timer. The timer is stopped and disposed with the form so no event source outlives its controls.
+Space is handled as an explicit toggle rather than a printable prefix character. It clears the buffer, stops the timer, and toggles the highlighted row through the guarded path. The timer tick otherwise clears only the prefix buffer. Table/builder reset, metadata repopulation, Refresh, and Change Connection also clear the buffer and stop the timer. The timer is stopped and disposed with the form so no event source outlives its controls.
 
 The navigation state is process-only. It is not part of builder state, preview state, configuration, or any module interface.
 
@@ -61,7 +63,7 @@ The navigation state is process-only. It is not part of builder state, preview s
 
 ### Chosen: custom behavior on the existing checked list
 
-This satisfies both checkbox-only changes and multi-character navigation without adding visible UI or changing selected-column state ownership. The change remains within `SqlUtility.ps1` and its UI tests.
+This satisfies explicit check changes and multi-character navigation without adding visible UI or changing selected-column state ownership. The change remains within `SqlUtility.ps1` and its UI tests.
 
 ### Rejected: native `CheckedListBox` behavior
 
@@ -87,9 +89,10 @@ Extend `tests/Test-SqlUtilityUi.ps1` with regression-first real WinForms behavio
 - Rapid `P`, `R`, `O`, `D` input accumulates and finishes on `ProductID`, while the exact checked-column set remains unchanged after every character.
 - The timer interval is exactly `1000` milliseconds, and input after reset starts a new prefix.
 - A no-match prefix retries from the newest character; a completely unmatched character preserves the highlight and checks.
-- Repeated column-text clicks may highlight but never toggle the item.
+- Repeated single column-text clicks may highlight but never toggle the item.
+- Each column-text double-click highlights and toggles the clicked item exactly once.
 - Each checkbox-glyph click toggles exactly once.
-- Native keyboard navigation and space do not change checks.
+- Prefix keyboard navigation does not change checks; Space toggles only the highlighted item and resets the prefix buffer.
 - All and None still update all columns, including after keyboard navigation, without changing the displayed preview snapshot.
 - Table change, metadata repopulation, Refresh, and Change Connection reset transient navigation state without affecting their existing builder/snapshot contracts.
 
@@ -97,4 +100,4 @@ Run the focused UI suite, aggregate `tests/Test-All.ps1`, `git diff --check`, an
 
 ## External Acceptance
 
-In the target Citrix environment, verify checkbox-only toggling and text-click non-toggling at the deployed DPI/scaling, then try the one-second prefix reset with representative wide schemas. The reset interval may be adjusted in a separately reviewed follow-up based on that hands-on result.
+In the target Citrix environment, verify checkbox-glyph and column-text double-click hit behavior, single text-click non-toggling, and Space toggling at the deployed DPI/scaling, then try the one-second prefix reset with representative wide schemas. The reset interval may be adjusted in a separately reviewed follow-up based on that hands-on result.

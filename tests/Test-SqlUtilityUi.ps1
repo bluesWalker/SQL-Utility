@@ -19,16 +19,17 @@ function Invoke-TestProtectedControlEvent($Control, [string] $MethodName, [Syste
     [System.Windows.Forms.Application]::DoEvents()
 }
 
-function Invoke-TestOutputColumnClick($Form, [int] $Index, [switch] $Text) {
+function Invoke-TestOutputColumnClick($Form, [int] $Index, [switch] $Text, [switch] $DoubleClick) {
     $list = Get-TestControl $Form 'OutputColumnsList'
     $rectangle = $list.GetItemRectangle($Index)
     $checkWidth = [System.Windows.Forms.SystemInformation]::MenuCheckSize.Width
     $x = if ($Text) { $rectangle.Left + $checkWidth + 8 } else { $rectangle.Left + [Math]::Max(1, [Math]::Floor($checkWidth / 2)) }
     $y = $rectangle.Top + [Math]::Max(1, [Math]::Floor($rectangle.Height / 2))
     $eventArgs = [System.Windows.Forms.MouseEventArgs]::new(
-        [System.Windows.Forms.MouseButtons]::Left, 1, $x, $y, 0
+        [System.Windows.Forms.MouseButtons]::Left, $(if ($DoubleClick) { 2 } else { 1 }), $x, $y, 0
     )
-    Invoke-TestProtectedControlEvent $list 'OnMouseDown' $eventArgs
+    $methodName = if ($DoubleClick) { 'OnMouseDoubleClick' } else { 'OnMouseDown' }
+    Invoke-TestProtectedControlEvent $list $methodName $eventArgs
 }
 
 function Invoke-TestOutputColumnKeyPress($Form, [char] $Character, $Observation) {
@@ -1667,8 +1668,14 @@ try {
     Assert-Equal 'P' $interaction.Prefix 'Input after reset starts a new one-character prefix'
     Assert-Equal 'PlantID' $outputList.SelectedItem.Name 'Input after reset searches from the new prefix'
     $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]' ') $navigationKeyPressObservation
-    Assert-Equal $true $eventArgs.Handled 'Space suppresses the native checkbox toggle'
-    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Space never changes output checks'
+    Assert-Equal $true $eventArgs.Handled 'Space uses the application-owned checkbox route'
+    Assert-Equal $false $outputList.GetItemChecked($outputList.SelectedIndex) 'Space unchecks the highlighted output column'
+    Assert-Equal '' $interaction.Prefix 'Space clears buffered prefix navigation'
+    Assert-Equal $false $navigationTimer.Enabled 'Space stops the prefix reset timer'
+    $eventArgs = Invoke-TestOutputColumnKeyPress $navigationForm ([char]' ') $navigationKeyPressObservation
+    Assert-Equal $true $eventArgs.Handled 'A second Space uses the same application-owned checkbox route'
+    Assert-Equal $true $outputList.GetItemChecked($outputList.SelectedIndex) 'A second Space checks the highlighted output column'
+    Assert-Equal $checkedBeforeTyping (@($outputList.CheckedItems | ForEach-Object Name) -join ',') 'Two Space presses restore the original output checks'
 
     $navigationTables.SelectedIndex = 1
     Assert-Equal '' $interaction.Prefix 'Selecting another table clears buffered navigation'
@@ -1780,6 +1787,12 @@ try {
     Invoke-TestOutputColumnClick $explorerForm 1 -Text
     Assert-Equal $initialCheckedNames (@($outputList.CheckedItems | ForEach-Object Name) -join ',') `
         'Repeated output-column text clicks preserve every check'
+
+    Invoke-TestOutputColumnClick $explorerForm 1 -Text -DoubleClick
+    Assert-Equal 1 $outputList.SelectedIndex 'Text double-click highlights the clicked output column'
+    Assert-Equal $false $outputList.GetItemChecked(1) 'Text double-click unchecks the clicked output column once'
+    Invoke-TestOutputColumnClick $explorerForm 1 -Text -DoubleClick
+    Assert-Equal $true $outputList.GetItemChecked(1) 'A second text double-click checks the clicked output column once'
 
     Invoke-TestOutputColumnClick $explorerForm 1
     Assert-Equal $false $outputList.GetItemChecked(1) 'Checkbox glyph click unchecks exactly one column'

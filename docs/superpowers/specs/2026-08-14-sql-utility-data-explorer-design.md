@@ -13,7 +13,7 @@ Data Explorer provides:
 - Automatic loading of visible physical user tables in the active database when the tab is first opened, with a client-side table-name filter and an explicit Refresh action.
 - No column-metadata or row query when a table is merely selected.
 - An explicit Preview action that retrieves column metadata when needed and returns no more than the configured preview-row limit.
-- A scrollable checked column list, selected in full after the first preview, with checkbox-only check changes and buffered prefix navigation as defined by the [Column Selection Navigation Design](2026-08-15-sql-utility-column-selection-navigation-design.md).
+- A scrollable checked column list, selected in full after the first preview, with explicit mouse/Space check changes and buffered prefix navigation as defined by the [Column Selection Navigation Design](2026-08-15-sql-utility-column-selection-navigation-design.md).
 - Zero or more structured filters joined only with `AND`. The same column can appear more than once, and a filter column does not need to be selected for output.
 - A single preview grid without paging, sorting controls, or an implicit count.
 - Export Preview, which exports exactly the currently displayed preview rows.

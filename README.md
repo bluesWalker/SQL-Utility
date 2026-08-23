@@ -172,6 +172,8 @@ Data Explorer is a constrained assistant for routine physical-table queries. On 
 
 The first **Preview** for a selected table loads catalog-derived column metadata, checks every output column, and executes an unordered `TOP (@PreviewLimit)` query. Later previews use the checked output columns and zero or more structured filters joined only with `AND`; repeated filter columns are allowed and do not need to be selected for output. At least one output column is required. All physical columns can be output, but the first release filters only these families:
 
+Only checkbox-glyph clicks or the **All** and **None** actions change output checks; text and keyboard interaction only moves the highlight. Rapid printable characters form a case-insensitive column-name prefix that resets after one second, falling back to the newest character when the complete prefix has no match.
+
 | SQL type family | Operators |
 | --- | --- |
 | `char`, `varchar`, `nchar`, `nvarchar` | equals, does not equal, contains, starts with; plus is null/is not null when nullable |

@@ -269,6 +269,10 @@ function Set-SqlUtilityStage {
         $tabs = Get-SqlUtilityNamedControl -Root $Form -Name 'WorkspaceTabs'
         $queryTab = Get-SqlUtilityNamedControl -Root $Form -Name 'QueryTab'
         $tabs.SelectedTab = $queryTab
+        $querySplit = Get-SqlUtilityNamedControl -Root $Form -Name 'QuerySplitContainer'
+        if ($null -ne $querySplit -and $querySplit.Height -ge (205 + $querySplit.SplitterWidth + $querySplit.Panel2MinSize)) {
+            $querySplit.SplitterDistance = 205
+        }
         $activeLabel = Get-SqlUtilityNamedControl -Root $Form -Name 'ActiveConnectionLabel'
         $activeLabel.Text = ('{0} {1} {2}' -f $Form.Tag.ActiveServer, [char] 0x2013, $Form.Tag.ActiveDatabase)
     }
@@ -537,10 +541,38 @@ function Set-SqlUtilityGridData {
     foreach($column in $Grid.Columns){$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells;$Grid.AutoResizeColumn($column.Index,[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::AllCells);$width=[Math]::Min(300,$column.Width);$column.AutoSizeMode=[System.Windows.Forms.DataGridViewAutoSizeColumnMode]::None;$column.Width=$width;$column.SortMode=$SortMode}
 }
 
+function Get-SqlUtilityDataExplorerTableListDisplayName {
+    param([Parameter(Mandatory = $true)] $Table)
+
+    if ([string]::Equals([string] $Table.SchemaName, 'dbo', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return [string] $Table.TableName
+    }
+    return ('{0}.{1}' -f [string] $Table.SchemaName, [string] $Table.TableName)
+}
+
 function Update-SqlUtilityDataExplorerTableList {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;$list=Get-SqlUtilityNamedControl $Form 'PhysicalTablesList';$filter=(Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text;$id=if($s.DataExplorerBuilder.Table){[int]$s.DataExplorerBuilder.Table.ObjectId}else{-1}
-    $list.Items.Clear();foreach($t in @($s.DataExplorerTables)){if(!$filter-or$t.DisplayName.IndexOf($filter,[System.StringComparison]::OrdinalIgnoreCase)-ge 0){[void]$list.Items.Add($t)}};$list.DisplayMember='DisplayName';for($i=0;$i-lt$list.Items.Count;$i++){if([int]$list.Items[$i].ObjectId-eq$id){$list.SelectedIndex=$i;break}}
+
+    $state = $Form.Tag
+    $list = Get-SqlUtilityNamedControl $Form 'PhysicalTablesList'
+    $filter = (Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text
+    $selectedObjectId = if ($state.DataExplorerBuilder.Table) { [int] $state.DataExplorerBuilder.Table.ObjectId } else { -1 }
+
+    $list.DisplayMember = 'ListDisplayName'
+    $list.Items.Clear()
+    foreach ($table in @($state.DataExplorerTables)) {
+        $listDisplayName = Get-SqlUtilityDataExplorerTableListDisplayName -Table $table
+        $table | Add-Member -NotePropertyName 'ListDisplayName' -NotePropertyValue $listDisplayName -Force
+        if (-not $filter -or $listDisplayName.IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            [void] $list.Items.Add($table)
+        }
+    }
+    for ($index = 0; $index -lt $list.Items.Count; $index++) {
+        if ([int] $list.Items[$index].ObjectId -eq $selectedObjectId) {
+            $list.SelectedIndex = $index
+            break
+        }
+    }
 }
 
 function Clear-SqlUtilityDataExplorerFilterRows {
@@ -1245,7 +1277,8 @@ function New-SqlUtilityMainForm {
 
     $workspaceHeader = [System.Windows.Forms.Panel]::new()
     $workspaceHeader.Dock = [System.Windows.Forms.DockStyle]::Top
-    $workspaceHeader.Height = 42
+    $workspaceHeader.Height = 33
+    $workspaceHeader.Padding = [System.Windows.Forms.Padding]::new(0, 4, 0, 4)
     $workspacePanel.Controls.Add($workspaceHeader)
 
     $changeConnectionButton = [System.Windows.Forms.Button]::new()
@@ -1282,7 +1315,7 @@ function New-SqlUtilityMainForm {
     $querySplit.Name = 'QuerySplitContainer'
     $querySplit.Dock = [System.Windows.Forms.DockStyle]::Fill
     $querySplit.Orientation = [System.Windows.Forms.Orientation]::Horizontal
-    $querySplit.SplitterDistance = 205
+    $querySplit.SplitterWidth = 10
     $querySplit.Panel1MinSize = 150
     $querySplit.Panel2MinSize = 120
     $querySplit.FixedPanel = [System.Windows.Forms.FixedPanel]::None

@@ -75,7 +75,7 @@ The execution-policy override is process-only. It does not change the machine, u
 1. **Choose a connection.** Enter Server and Database manually, or select a saved pair from the list. Both input fields start blank on every launch; selecting a saved pair fills them without connecting automatically.
 2. **Test or connect.** **Test Connection** validates the database and shows a success/failure pop-up without entering the workspace. **Connect** performs the same validation and then opens the workspace. A successful pair is added to the saved list and the application attempts to persist it.
 3. **Manage saved pairs.** Select a saved pair and use **Delete**. Deletion requires confirmation and updates the active configuration only after a successful write.
-4. **Explore a table.** Open Data Explorer to load visible physical user tables. Filter the schema-qualified table list in memory or use **Refresh** to re-query it. Selecting a table does not query its columns or rows.
+4. **Explore a table.** Open Data Explorer to load visible physical user tables. Default-schema tables appear by table name, while other schemas appear as `schema.table`, without SQL identifier brackets. Filter the displayed names in memory or use **Refresh** to re-query the catalog. Selecting a table does not query its columns or rows.
 5. **Preview selected data.** Select a table and choose **Preview**. The first preview loads its columns, selects all output columns, and returns at most the configured preview-row limit. Later previews use the checked output columns and any structured `AND` filters. Preview rows are unordered and can differ between executions.
 6. **Export or hand off a preview.** **Export Preview** writes exactly the displayed bounded preview snapshot without re-running SQL. **Send to Query** generates editable single-table SQL from the current builder, confirms before replacing nonblank editor text, switches to Query, and does not execute it.
 7. **Run a query.** Enter an allowed SQL statement in the Query tab and select **Execute**. Results appear in a read-only grid below the editor. The single-line toolbar is ordered **Execute** | `ORDER BY required for paging.` | page status | **Count** | **<** | **>** | **Export**. The `<` and `>` controls mean Previous page and Next page; **Export** means Export to Excel.
@@ -116,7 +116,7 @@ flowchart LR
 
 Interactive database operations return neutral `DataTable` and page-metadata objects; the database module never renders WinForms controls. Ordered export crosses a callback-based neutral schema/row boundary. Complete unordered export uses the bounded in-memory cache. This separation keeps SQL resource ownership in the database module and workbook generation in the Excel module.
 
-The query workspace uses native Windows visual styles with Segoe UI 9-point interface chrome and a Consolas 10-point SQL editor. Its result splitter remains user-draggable. Result columns are sized from the currently displayed page and automatically capped at 300 pixels; horizontal scrolling remains available. No dark theme, external resource, or custom widget framework is added.
+The query workspace uses native Windows visual styles with Segoe UI 9-point interface chrome and a Consolas 10-point SQL editor. It opens with the output viewer taller than the editor, and its 10-pixel result splitter remains user-draggable for remote environments. Result columns are sized from the currently displayed page and automatically capped at 300 pixels; horizontal scrolling remains available. No dark theme, external resource, or custom widget framework is added.
 
 ## Configuration and Persistence
 
@@ -168,7 +168,7 @@ The configuration never stores:
 
 ## Data Explorer
 
-Data Explorer is a constrained assistant for routine physical-table queries. On first activation it uses a fixed catalog query to list non-system physical user tables visible to the signed-in Windows identity, ordered by schema and table. The table-name filter is a case-insensitive in-memory substring filter; **Refresh** is the explicit database re-query. Selecting a table resets its current builder but performs no metadata or row query.
+Data Explorer is a constrained assistant for routine physical-table queries. On first activation it uses a fixed catalog query to list non-system physical user tables visible to the signed-in Windows identity, ordered by schema and table. A `dbo` table is displayed by its bare table name; a table in another schema is displayed as `schema.table`, without identifier brackets. The table-name filter is a case-insensitive in-memory substring filter over those displayed names; **Refresh** is the explicit database re-query. Selecting a table resets its current builder but performs no metadata or row query.
 
 The first **Preview** for a selected table loads catalog-derived column metadata, checks every output column, and executes an unordered `TOP (@PreviewLimit)` query. Later previews use the checked output columns and zero or more structured filters joined only with `AND`; repeated filter columns are allowed and do not need to be selected for output. At least one output column is required. All physical columns can be output, but the first release filters only these families:
 

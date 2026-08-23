@@ -438,8 +438,6 @@ $appearanceForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C
 try {
     Show-TestForm $appearanceForm
     Enter-TestWorkspace $appearanceForm
-    $appearanceForm.Size = $appearanceForm.MinimumSize
-    [System.Windows.Forms.Application]::DoEvents()
 
     $queryEditor = Get-TestControl $appearanceForm 'SqlEditor'
     $executeButton = Get-TestControl $appearanceForm 'ExecuteButton'
@@ -452,11 +450,30 @@ try {
     $queryActionLayout = Get-TestControl $appearanceForm 'QueryActionLayout'
     $querySplit = Get-TestControl $appearanceForm 'QuerySplitContainer'
     $resultsGrid = Get-TestControl $appearanceForm 'ResultsGrid'
+    $changeConnectionButton = Get-TestControl $appearanceForm 'ChangeConnectionButton'
+    $activeConnectionLabel = Get-TestControl $appearanceForm 'ActiveConnectionLabel'
     if ($null -eq $pagingHelp) {
         $pagingHelp = @($querySplit.Panel1.Controls | ForEach-Object { $_.Controls } |
             Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -match 'Paging' } | Select-Object -First 1)
         if ($pagingHelp.Count -gt 0) { $pagingHelp = $pagingHelp[0] }
     }
+
+    Assert-Equal 10 $querySplit.SplitterWidth 'Query splitter provides a remote-friendly drag target'
+    Assert-Equal 205 $querySplit.Panel1.Height 'Query editor pane initializes after final layout'
+    Assert-Equal 170 $queryEditor.Height 'Query editor uses the approved compact default height'
+    Assert-True ($resultsGrid.Height -ge 314) 'Query output viewer uses at least the approved default height'
+    Assert-True ($resultsGrid.Height -gt $queryEditor.Height) 'Query output viewer starts taller than the editor'
+
+    $workspaceHeader = $activeConnectionLabel.Parent
+    Assert-Equal $countButton.Height $changeConnectionButton.Height 'Change Connection matches standard query action height'
+    Assert-Equal 4 $workspaceHeader.Padding.Top 'Connection header keeps compact top padding'
+    Assert-Equal 4 $workspaceHeader.Padding.Bottom 'Connection header keeps compact bottom padding'
+    Assert-Equal ($changeConnectionButton.Height + $workspaceHeader.Padding.Vertical) $workspaceHeader.Height `
+        'Connection header contains only the standard button and balanced padding'
+    Assert-Equal $workspaceHeader.Padding.Top $activeConnectionLabel.Top 'Connection text starts after compact top padding'
+
+    $appearanceForm.Size = $appearanceForm.MinimumSize
+    [System.Windows.Forms.Application]::DoEvents()
 
     Assert-Equal 'Segoe UI' $appearanceForm.Font.Name 'Application uses Segoe UI'
     Assert-Equal 9 ([int] $appearanceForm.Font.SizeInPoints) 'Application uses Segoe UI 9pt'
@@ -1765,11 +1782,19 @@ try {
         (Get-TestControl $explorerForm 'PreviewGrid').ScrollBars `
         'Preview grid supports horizontal and vertical scrolling'
     Assert-Equal 1 $explorerHarness.Recorder.TableCalls.Count 'First activation loads catalog once'
-    Assert-Equal 3 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Catalog binds physical tables'
+    $tableList = Get-TestControl $explorerForm 'PhysicalTablesList'
+    Assert-Equal 3 $tableList.Items.Count 'Catalog binds physical tables'
+    Assert-Equal 'Orders,sales.OrderHistory,Percent%_Star*' `
+        (@($tableList.Items | ForEach-Object { $tableList.GetItemText($_) }) -join ',') `
+        'Table list omits dbo and displays other schemas without identifier brackets'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'sales.OrderHistory'
+    Assert-Equal 1 $tableList.Items.Count 'Table filter matches the simplified non-dbo display name'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'dbo'
+    Assert-Equal 0 $tableList.Items.Count 'Table filter ignores the hidden dbo schema text'
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
-    Assert-Equal 2 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter is case-insensitive substring'
+    Assert-Equal 2 $tableList.Items.Count 'Filter is case-insensitive substring'
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = '%_Star*'
-    Assert-Equal 1 (Get-TestControl $explorerForm 'PhysicalTablesList').Items.Count 'Filter treats wildcard characters literally'
+    Assert-Equal 1 $tableList.Items.Count 'Filter treats wildcard characters literally'
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
     (Get-TestControl $explorerForm 'PhysicalTablesList').SelectedIndex = 0
     Assert-Equal 0 $explorerHarness.Recorder.ColumnCalls.Count 'Selecting table does not load metadata'

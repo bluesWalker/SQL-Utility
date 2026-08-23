@@ -44,7 +44,7 @@ The responsive pane hierarchy and scrollbar containment correction is owned by [
 
 Data Explorer is a new workspace tab beside Query and Settings. Its layout has:
 
-1. A left table pane with a table-name filter, Refresh action, and schema-qualified physical table names.
+1. A left table pane with a table-name filter, Refresh action, bare `dbo` table names, and `schema.table` names for other schemas.
 2. An upper-right builder area containing the checked output-column list and structured filter rows.
 3. A toolbar containing Preview, Export Preview, and Send to Query.
 4. A lower-right read-only preview grid and a header that identifies the source table and displayed row count.
@@ -55,7 +55,7 @@ The preview grid reuses the Query tab's neutral `DataTable` binding, empty-resul
 
 ### Initial table loading
 
-The first activation of Data Explorer synchronously queries the active database for physical user tables visible to the signed-in identity, excluding `sys.tables.is_ms_shipped = 1`. Results are sorted by schema and table name and displayed as `[schema].[table]` labels. The text filter performs a case-insensitive substring match over schema-qualified names in memory without another database query.
+The first activation of Data Explorer synchronously queries the active database for physical user tables visible to the signed-in identity, excluding `sys.tables.is_ms_shipped = 1`. Results are sorted by schema and table name. A table in `dbo` is displayed by its bare table name, while a table in another schema is displayed as `schema.table`; list labels omit SQL identifier brackets. The text filter performs a case-insensitive substring match over these displayed names in memory without another database query. Catalog schema/table metadata remains unchanged and generated SQL remains schema-qualified and safely bracketed.
 
 Refresh re-runs the fixed table-catalog query. If the selected table still exists, it remains selected but its cached metadata, output selection, and filters are reset so the next Preview obtains its current structure. If it no longer exists, the table selection and builder are reset. In either case, the last successful preview snapshot remains available until a later Preview succeeds or the connection changes.
 

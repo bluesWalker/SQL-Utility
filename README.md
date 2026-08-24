@@ -4,6 +4,14 @@ SQL Utility is a portable Windows application for browsing physical SQL Server t
 
 For implementation details, technical constraints, tests, and maintainer information, see the [Technical Reference](TECHNICAL_REFERENCE.md).
 
+## Before we start
+
+Purpose of developing this tool is to provide some convenience for frequent day-to-day queries and outputs processing in databases and it should stay within this scope.
+
+- The app is strictly read-only. No CREATE/UPDATE/DETELE is allowed. For use cases beyond that, please use SQLCMD instead.
+- It is designed for internal use only so there is no credential control. It uses only your signed in Windows account.
+- It is designed to be lightweight and portable. No third-party dependencies are required.
+
 ## Install and start
 
 SQL Utility does not use an installer and does not require administrator access.
@@ -41,59 +49,6 @@ The connection uses your signed-in Windows identity. Your account must already h
 After a successful test or connection, the server/database pair appears under **Saved Connections** and is saved when the application folder is writable. Selecting a saved connection fills the two fields but does not connect automatically. Select a saved connection and then **Delete** to remove it; the application asks for confirmation.
 
 After connecting, the workspace shows the active server and database. Select **Change Connection** to return to the connection screen. If you confirm, the current SQL text, query results, Data Explorer selections, filters, and preview are cleared. Saved connections and settings remain.
-
-## Data Explorer tab
-
-Use **Data Explorer** when you know the table you need and want to build a simple query without writing SQL.
-
-### Choose a table
-
-- The tab lists the physical user tables visible to your Windows account. Views are not listed.
-- A table in the `dbo` schema appears as its table name. Other tables appear as `schema.table`.
-- Type in the box above the table list to filter the displayed names. This filters the list already loaded in the application; it does not query the database again.
-- Select **Refresh** to reload the table list from SQL Server.
-- Select a table, then select **Preview**. The first preview loads the table's columns, selects every output column, and retrieves data.
-
-Selecting a table by itself does not retrieve its columns or rows.
-
-### Choose output columns
-
-Checked columns are included in the next preview or in SQL sent to the Query tab. At least one column must be checked.
-
-- Select **All** or **None** to check or clear every column.
-- Click a checkbox, double-click a column name, or highlight a column and press Space to change its check state.
-- A single click on column text only highlights it; it does not change the checkbox.
-- While the column list has focus, type the beginning of a column name to jump to it. Characters typed within one second are treated as one prefix.
-
-Changing the checked columns does not alter the preview already displayed. Select **Preview** again when you want to retrieve a new preview.
-
-### Add filters
-
-Select **Add Filter** to add a filter row. In each row:
-
-1. Choose a column.
-2. Choose an operator.
-3. Enter a value when the operator requires one.
-
-Use **Remove** on a row to delete that filter, or **Clear** to remove all filters. All filter rows are combined with `AND`. You may filter on a column that is not selected for output, and you may add more than one filter for the same column.
-
-Available operators depend on the column type:
-
-| Column type | Available operators |
-| --- | --- |
-| Text | equals, does not equal, contains, starts with; is null and is not null when allowed |
-| Number or date/time | `=`, `<>`, `>`, `>=`, `<`, `<=`; is null and is not null when allowed |
-| True/False or GUID | equals, does not equal; is null and is not null when allowed |
-
-Some specialist column types can be displayed but cannot be filtered. For **contains** and **starts with**, `%`, `_`, and `[` are treated as ordinary characters rather than wildcard syntax.
-
-### Preview, export, or continue in Query
-
-- **Preview** retrieves up to the **Preview row limit** from Settings. Preview results are unordered, so the rows may differ between runs. A limit reduces the number of returned rows but does not guarantee that a large or unindexed table will respond quickly.
-- **Export Preview** saves exactly the rows and columns currently displayed. It does not run the preview again and does not export the complete table.
-- **Send to Query** creates editable SQL from the current table, checked columns, and filters, then switches to the Query tab. It does not execute the SQL. If the Query editor already contains text, you must confirm before it is replaced.
-
-The displayed preview and the current selections are independent. Changing the table, output columns, filters, or preview limit does not change the displayed preview until **Preview** succeeds again. **Export Preview** uses the displayed preview; **Send to Query** uses the current selections.
 
 ## Query tab
 
@@ -147,6 +102,59 @@ Select **Export** and choose an `.xlsx` destination. Export is available only wh
 - A truncated unordered result cannot be exported. Add a suitable `ORDER BY`, execute again, and then export.
 
 The workbook contains one worksheet named `Results`, with a bold filtered header row that remains visible while scrolling. Existing destination files require confirmation before replacement. The export destination is not remembered.
+
+## Data Explorer tab
+
+Use **Data Explorer** when you know the table you need and want to build a simple query without writing SQL.
+
+### Choose a table
+
+- The tab lists the physical user tables visible to your Windows account. Views are not listed.
+- A table in the `dbo` schema appears as its table name. Other tables appear as `schema.table`.
+- Type in the box above the table list to filter the displayed names. This filters the list already loaded in the application; it does not query the database again.
+- Select **Refresh** to reload the table list from SQL Server.
+- Select a table, then select **Preview**. The first preview loads the table's columns, selects every output column, and retrieves data.
+
+Selecting a table by itself does not retrieve its columns or rows.
+
+### Choose output columns
+
+Checked columns are included in the next preview or in SQL sent to the Query tab. At least one column must be checked.
+
+- Select **All** or **None** to check or clear every column.
+- Click a checkbox, double-click a column name, or highlight a column and press Space to change its check state.
+- A single click on column text only highlights it; it does not change the checkbox.
+- While the column list has focus, type the beginning of a column name to jump to it. Characters typed within one second are treated as one prefix.
+
+Changing the checked columns does not alter the preview already displayed. Select **Preview** again when you want to retrieve a new preview.
+
+### Add filters
+
+Select **Add Filter** to add a filter row. In each row:
+
+1. Choose a column.
+2. Choose an operator.
+3. Enter a value when the operator requires one.
+
+Use **Remove** on a row to delete that filter, or **Clear** to remove all filters. All filter rows are combined with `AND`. You may filter on a column that is not selected for output, and you may add more than one filter for the same column.
+
+Available operators depend on the column type:
+
+| Column type | Available operators |
+| --- | --- |
+| Text | equals, does not equal, contains, starts with; is null and is not null when allowed |
+| Number or date/time | `=`, `<>`, `>`, `>=`, `<`, `<=`; is null and is not null when allowed |
+| True/False or GUID | equals, does not equal; is null and is not null when allowed |
+
+Some specialist column types can be displayed but cannot be filtered. For **contains** and **starts with**, `%`, `_`, and `[` are treated as ordinary characters rather than wildcard syntax.
+
+### Preview, export, or continue in Query
+
+- **Preview** retrieves up to the **Preview row limit** from Settings. Preview results are unordered, so the rows may differ between runs. A limit reduces the number of returned rows but does not guarantee that a large or unindexed table will respond quickly.
+- **Export Preview** saves exactly the rows and columns currently displayed. It does not run the preview again and does not export the complete table.
+- **Send to Query** creates editable SQL from the current table, checked columns, and filters, then switches to the Query tab. It does not execute the SQL. If the Query editor already contains text, you must confirm before it is replaced.
+
+The displayed preview and the current selections are independent. Changing the table, output columns, filters, or preview limit does not change the displayed preview until **Preview** succeeds again. **Export Preview** uses the displayed preview; **Send to Query** uses the current selections.
 
 ## Settings tab
 

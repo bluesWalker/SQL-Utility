@@ -39,11 +39,12 @@ Microsoft Excel is not required to generate workbooks. Excel or another compatib
 
 ## Portable Distribution
 
-The runtime distribution contains exactly seven files:
+The runtime distribution contains exactly eight files:
 
 ```text
 StartSqlUtility.cmd
 SqlUtility.ps1
+SqlUtility.cat
 modules/
   SqlUtility.Config.ps1
   SqlUtility.QueryPolicy.ps1
@@ -52,7 +53,7 @@ modules/
   SqlUtility.Excel.ps1
 ```
 
-Keep this structure intact. `SqlUtility.ps1` loads every module relative to its own directory, so the folder can be moved without installation or module registration.
+Keep this structure intact. `SqlUtility.ps1` validates the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`, then loads every module relative to its own directory. The folder can therefore be moved without installation or module registration.
 
 `SqlUtility.config.json` is not part of the distribution. The application creates it beside `SqlUtility.ps1` only when a successful connection or settings change needs to be persisted.
 
@@ -68,7 +69,17 @@ The launcher starts `powershell.exe` with:
 -NoLogo -NoProfile -STA -ExecutionPolicy Bypass
 ```
 
-The execution-policy override is process-only. It does not change the machine, user, registry, or environment configuration. The launcher resolves `SqlUtility.ps1` beside itself even when it is started from another working directory.
+The execution-policy override is process-only. It does not change the machine, user, registry, or environment configuration. The launcher resolves `SqlUtility.ps1` beside itself even when it is started from another working directory and requests catalog verification before any production module is loaded. A missing catalog, missing protected file, or hash mismatch produces an integrity-check error and exit code `2`.
+
+## Building a Distribution Package
+
+Maintainers create a ZIP package from the repository root with:
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\scripts\New-SqlUtilityPackage.ps1 -DestinationPath C:\Path\SQL-Utility.zip
+```
+
+The destination directory must already exist and the destination ZIP must not. The script checks the seven protected runtime paths, refreshes the source-controlled version-2 SHA-256 `SqlUtility.cat` only when it no longer matches them, stages exactly the eight runtime files, validates the staged copy, and moves a completed ZIP into place. It uses only Windows PowerShell 5.1 and .NET Framework components.
 
 ## User Workflow
 
@@ -91,7 +102,8 @@ The application does not keep an idle database connection open. Connection tests
 
 ```mermaid
 flowchart LR
-    Launcher["StartSqlUtility.cmd"] --> UI["SqlUtility.ps1<br/>WinForms and workflow state"]
+    Launcher["StartSqlUtility.cmd"] --> UI["SqlUtility.ps1<br/>integrity check, WinForms, and workflow state"]
+    UI --> Catalog["SqlUtility.cat<br/>SHA-256 runtime hashes"]
     UI --> Config["SqlUtility.Config.ps1"]
     UI --> Policy["SqlUtility.QueryPolicy.ps1"]
     UI --> Explorer["SqlUtility.DataExplorer.ps1"]
@@ -107,7 +119,8 @@ flowchart LR
 
 | File | Responsibility |
 | --- | --- |
-| `SqlUtility.ps1` | Creates WinForms controls, coordinates connection/Data Explorer/query/count/settings/export workflows, owns application, builder, preview-snapshot, and explicit-count state, binds neutral tables, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
+| `SqlUtility.cat` | Generated version-2 Windows file catalog containing SHA-256 hashes and relative paths for the seven protected runtime command/script files. It excludes mutable configuration and export files. |
+| `SqlUtility.ps1` | Validates the runtime catalog when requested by the launcher, then creates WinForms controls, coordinates connection/Data Explorer/query/count/settings/export workflows, owns application, builder, preview-snapshot, and explicit-count state, binds neutral tables, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
 | `modules/SqlUtility.Config.ps1` | Creates schema 2 defaults, migrates valid schema 1 input in memory, validates settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
 | `modules/SqlUtility.QueryPolicy.ps1` | Validates named sources, approved join chains, normalization, primary-table extraction, and top-level ordering; generates count-source/wrapper SQL. |
 | `modules/SqlUtility.DataExplorer.ps1` | Validates UI-neutral table/column/filter inputs, maps supported SQL types and operators, quotes catalog identifiers, converts typed values, and builds parameterized preview descriptors and safe editable Query SQL. It has no WinForms or database access. |
@@ -334,6 +347,7 @@ Data Explorer **Export Preview** uses the same neutral cached-table exporter and
 - Excel files and their safe-write transients are written only to the user-selected destination directory.
 - The application performs no registry or environment-variable writes.
 - SQL Server connection/query traffic is the application's only automatic network protocol.
+- Startup catalog validation detects accidental changes to the seven protected runtime files. The catalog is currently unsigned, so it does not authenticate the publisher or prevent someone from deliberately regenerating both the files and catalog.
 
 ## Error Handling and Runtime Model
 
@@ -360,7 +374,8 @@ Tests are dependency-free PowerShell scripts and do not require a live SQL Serve
 | `tests/Test-Database.ps1` | Integrated connection strings, physical-table/column catalog queries, typed bounded previews, paging, neutral result conversion, limits, timeouts, and disposal boundaries. |
 | `tests/Test-Excel.ps1` | ZIP/XML workbook structure, formatting, data fidelity, limits, overwrite safety, timeout, and cleanup. |
 | `tests/Test-SqlUtilityUi.ps1` | WinForms stages, Data Explorer workflows and snapshot boundaries, state transitions, injected services, paging, export eligibility, settings, and failure paths. |
-| `tests/Test-Launcher.ps1` | Exact seven-file distribution, relative module loading, launcher behavior, Windows PowerShell 5.1 syntax, STA/process policy, external working directory, and mutation boundaries. |
+| `tests/Test-Launcher.ps1` | Exact eight-file distribution, catalog validation, relative module loading, launcher behavior, Windows PowerShell 5.1 syntax, STA/process policy, external working directory, and mutation boundaries. |
+| `tests/Test-Packaging.ps1` | Real package creation in a disposable project copy, catalog validation after clean Git checkouts with either `core.autocrlf` setting, exact ZIP contents, catalog refresh, extracted validation, and changed-file detection. |
 | `tests/Test-All.ps1` | Aggregate runner for every production suite. |
 
 Focused examples:
@@ -381,7 +396,8 @@ powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Tes
 
 These are external acceptance checks. Local automated tests do not complete them. Citrix launch, live SQL Server behavior, cloud-drive configuration reload, and desktop Excel opening remain pending until performed in that environment.
 
-- [ ] Copy/extract the seven runtime files and launch `StartSqlUtility.cmd` in Citrix.
+- [ ] Copy/extract the eight runtime files and launch `StartSqlUtility.cmd` in Citrix.
+- [ ] Confirm an unchanged package starts, then confirm a test copy with one modified module is rejected by the catalog check.
 - [ ] Test and persist a real Windows integrated server/database connection.
 - [ ] Verify automatic/refresh physical-table discovery and metadata visibility under the signed-in identity.
 - [ ] Preview representative large, wide, indexed, and unindexed tables and verify bounded rows, unordered labeling, filters, and timeout behavior.

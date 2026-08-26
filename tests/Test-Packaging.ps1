@@ -12,6 +12,24 @@ $protectedRuntimeFiles = @(
     'modules\SqlUtility.Database.ps1',
     'modules\SqlUtility.Excel.ps1'
 )
+
+function Invoke-TestGit {
+    param([Parameter(Mandatory = $true)][string[]] $Arguments)
+
+    $priorErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & git.exe @Arguments 2>&1
+    }
+    finally {
+        $ErrorActionPreference = $priorErrorActionPreference
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw ('Git command failed: git {0}{1}{2}' -f
+            ($Arguments -join ' '), [Environment]::NewLine, ($output -join [Environment]::NewLine))
+    }
+}
+
 $packageScript = Join-Path $projectRoot 'scripts\New-SqlUtilityPackage.ps1'
 Assert-True (Test-Path -LiteralPath $packageScript -PathType Leaf) `
     'Packaging script exists'
@@ -21,10 +39,55 @@ $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) `
 $fixtureRoot = Join-Path $temporaryRoot 'Project'
 $packageOutputFolder = Join-Path $temporaryRoot 'Output'
 $extractedFolder = Join-Path $temporaryRoot 'Extracted'
+$checkoutFixtureRoot = Join-Path $temporaryRoot 'Checkout Source'
 [void] [System.IO.Directory]::CreateDirectory($fixtureRoot)
 [void] [System.IO.Directory]::CreateDirectory($packageOutputFolder)
 
 try {
+    $attributesPath = Join-Path $projectRoot '.gitattributes'
+    $gitCommand = Get-Command git.exe -ErrorAction SilentlyContinue
+    Assert-True ($null -ne $gitCommand) 'Git is available for clean-checkout validation'
+    Assert-True (Test-Path -LiteralPath $attributesPath -PathType Leaf) `
+        'Protected runtime files have a source-control checkout policy'
+    if ($null -ne $gitCommand -and
+        (Test-Path -LiteralPath $attributesPath -PathType Leaf)) {
+        [void] [System.IO.Directory]::CreateDirectory($checkoutFixtureRoot)
+        Copy-Item -LiteralPath $attributesPath -Destination $checkoutFixtureRoot
+        Copy-Item -LiteralPath (Join-Path $projectRoot 'SqlUtility.cat') `
+            -Destination $checkoutFixtureRoot
+        foreach ($relativePath in $protectedRuntimeFiles) {
+            $sourcePath = Join-Path $projectRoot $relativePath
+            $destinationPath = Join-Path $checkoutFixtureRoot $relativePath
+            [void] [System.IO.Directory]::CreateDirectory((Split-Path -Parent $destinationPath))
+            Copy-Item -LiteralPath $sourcePath -Destination $destinationPath
+        }
+
+        Invoke-TestGit -Arguments @('init', '--quiet', $checkoutFixtureRoot)
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'config', 'user.name', 'SQL Utility Tests')
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'config', 'user.email', 'tests@localhost')
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'config', 'core.autocrlf', 'false')
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'config', 'core.safecrlf', 'false')
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'add', '--', '.')
+        Invoke-TestGit -Arguments @('-C', $checkoutFixtureRoot, 'commit', '--quiet', '-m', 'checkout fixture')
+        $fixtureCommit = (& git.exe -C $checkoutFixtureRoot rev-parse HEAD).Trim()
+        Assert-Equal 0 $LASTEXITCODE 'Checkout fixture commit can be resolved'
+
+        foreach ($autoCrlf in @('true', 'false')) {
+            $checkoutRoot = Join-Path $temporaryRoot ('Checkout ' + $autoCrlf)
+            Invoke-TestGit -Arguments @('clone', '--quiet', '--no-hardlinks', '--no-checkout',
+                $checkoutFixtureRoot, $checkoutRoot)
+            Invoke-TestGit -Arguments @('-C', $checkoutRoot, 'config', 'core.autocrlf', $autoCrlf)
+            Invoke-TestGit -Arguments @('-C', $checkoutRoot, 'checkout', '--quiet',
+                '--detach', $fixtureCommit)
+            $checkoutRuntimePaths = @(
+                $protectedRuntimeFiles | ForEach-Object { Join-Path $checkoutRoot $_ }
+            )
+            Assert-Equal 'Valid' ([string] (Test-FileCatalog -Path $checkoutRuntimePaths `
+                -CatalogFilePath (Join-Path $checkoutRoot 'SqlUtility.cat'))) `
+                "Clean checkout matches the catalog when core.autocrlf=$autoCrlf"
+        }
+    }
+
     if (Test-Path -LiteralPath $packageScript -PathType Leaf) {
         foreach ($relativePath in $protectedRuntimeFiles) {
             $sourcePath = Join-Path $projectRoot $relativePath
@@ -97,6 +160,8 @@ finally {
         $resolvedSystemTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
         if ($resolvedTemporaryRoot.StartsWith($resolvedSystemTemp, [System.StringComparison]::OrdinalIgnoreCase) -and
             (Split-Path -Leaf $resolvedTemporaryRoot) -like 'SqlUtility.PackagingTest.*') {
+            Get-ChildItem -LiteralPath $resolvedTemporaryRoot -Force -Recurse |
+                ForEach-Object { $_.Attributes = [System.IO.FileAttributes]::Normal }
             [System.IO.Directory]::Delete($resolvedTemporaryRoot, $true)
         }
     }

@@ -375,7 +375,7 @@ Tests are dependency-free PowerShell scripts and do not require a live SQL Serve
 | `tests/Test-Excel.ps1` | ZIP/XML workbook structure, formatting, data fidelity, limits, overwrite safety, timeout, and cleanup. |
 | `tests/Test-SqlUtilityUi.ps1` | WinForms stages, Data Explorer workflows and snapshot boundaries, state transitions, injected services, paging, export eligibility, settings, and failure paths. |
 | `tests/Test-Launcher.ps1` | Exact eight-file distribution, catalog validation, relative module loading, launcher behavior, Windows PowerShell 5.1 syntax, STA/process policy, external working directory, and mutation boundaries. |
-| `tests/Test-Packaging.ps1` | Real package creation in a disposable project copy, exact ZIP contents, catalog refresh, extracted validation, and changed-file detection. |
+| `tests/Test-Packaging.ps1` | Real package creation in a disposable project copy, catalog validation after clean Git checkouts with either `core.autocrlf` setting, exact ZIP contents, catalog refresh, extracted validation, and changed-file detection. |
 | `tests/Test-All.ps1` | Aggregate runner for every production suite. |
 
 Focused examples:

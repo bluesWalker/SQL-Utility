@@ -1,0 +1,7 @@
+/StartSqlUtility.cmd text eol=crlf
+/SqlUtility.ps1 text eol=crlf
+/modules/SqlUtility.Config.ps1 text eol=crlf
+/modules/SqlUtility.QueryPolicy.ps1 text eol=crlf
+/modules/SqlUtility.DataExplorer.ps1 text eol=crlf
+/modules/SqlUtility.Database.ps1 text eol=crlf
+/modules/SqlUtility.Excel.ps1 text eol=crlf

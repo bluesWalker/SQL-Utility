@@ -19,6 +19,7 @@ Data Explorer provides:
 - Export Preview, which exports exactly the currently displayed preview rows.
 - Send to Query, which generates editable SQL from the current builder choices, confirms before replacing nonblank Query-tab text, switches to the Query tab, and does not execute.
 - A global `previewRowLimit` setting from `10` through `500`, default `100`.
+- A global retained-result `resultDataLimitMiB` setting from `128` through `1024`, default `256`, shared with Query pages and unordered caches.
 
 The user explicitly approved adding `modules/SqlUtility.DataExplorer.ps1`, changing the portable runtime distribution from six to seven files.
 
@@ -70,7 +71,7 @@ On the first Preview for a selected table:
 3. Execute an unordered, parameterized preview for all columns and at most `previewRowLimit` rows.
 4. Replace the preview snapshot only after the operation succeeds.
 
-Later Preview actions use the current selected output columns and filters. At least one output column is required. A successful Preview atomically replaces the one preview snapshot; the previous table's preview is then lost. A metadata, validation, query, or timeout failure preserves the prior successful snapshot and its Export Preview availability.
+Later Preview actions use the current selected output columns and filters. At least one output column is required. A successful Preview atomically replaces the one preview snapshot; the previous table's preview is then lost. A metadata, validation, query, timeout, or result-data-limit failure preserves the prior successful snapshot and its Export Preview availability. A limit failure never displays the partial rows read before the limit was reached and asks the user to review selected columns and filters.
 
 Preview SQL uses `TOP (@PreviewLimit)` with no `ORDER BY`. The preview header and documentation state that rows are unordered and can differ between executions. The SQL command and the client reader both enforce the configured maximum as defense in depth. No sentinel row, completeness probe, paging state, or total count is produced.
 
@@ -171,23 +172,24 @@ All existing Excel behavior remains: formula-literal safety, binary hex fidelity
 
 ## Configuration Migration
 
-Configuration schema version 2 adds one global property:
+Configuration schema version 3 adds the shared retained-result data limit to the existing version 2 preview setting:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "unorderedRowLimit": 1000,
   "queryExportTimeoutSeconds": 120,
   "previewRowLimit": 100,
+  "resultDataLimitMiB": 256,
   "connections": []
 }
 ```
 
-`previewRowLimit` is an integer from `10` through `500`, inclusive, default `100`. It appears in Settings and becomes active only after the existing safe Save Settings workflow succeeds. Changing it does not execute or modify the displayed preview.
+`previewRowLimit` is an integer from `10` through `500`, inclusive, default `100`. `resultDataLimitMiB` is an integer from `128` through `1024`, inclusive, default `256`. Both appear in Settings and become active only after the existing safe Save Settings workflow succeeds. Changing either setting does not execute or modify the displayed preview.
 
-Reading schema version 1 performs an in-memory migration to version 2 by supplying `previewRowLimit = 100` and preserving all validated version 1 values. Reading alone does not create or rewrite the file. A later successful connection or settings save persists the complete version 2 object through the existing safe-write path. Schema versions greater than 2 remain unsupported; malformed version 2 data remains corruption rather than being silently repaired.
+Reading schema version 1 supplies `previewRowLimit = 100` and `resultDataLimitMiB = 256`; reading schema version 2 preserves `previewRowLimit` and supplies `resultDataLimitMiB = 256`. Both migrate in memory without creating or rewriting the file. A later successful connection or settings save persists the complete version 3 object through the existing safe-write path. Schema versions greater than 3 remain unsupported; malformed version 3 data remains corruption rather than being silently repaired.
 
-All config-copying and saved-connection operations preserve `previewRowLimit`. Safe replacement, cleanup-error handling, environmental-read failure behavior, and the restriction against persisted query/editor/result state remain unchanged.
+All config-copying and saved-connection operations preserve `previewRowLimit` and `resultDataLimitMiB`. Safe replacement, cleanup-error handling, environmental-read failure behavior, and the restriction against persisted query/editor/result state remain unchanged.
 
 ## Architecture and Runtime Distribution
 
@@ -207,7 +209,7 @@ modules/
 Responsibilities are:
 
 - `SqlUtility.ps1`: WinForms construction, Data Explorer state and workflow orchestration, shared result rendering, button states, prompts, and user messages.
-- `SqlUtility.Config.ps1`: schema version 2 defaults, migration, validation, copying, and safe persistence.
+- `SqlUtility.Config.ps1`: schema version 3 defaults, version 1/2 migration, validation, copying, and safe persistence.
 - `SqlUtility.QueryPolicy.ps1`: unchanged ownership of user/editor SQL tokenization, read-only grammar, JOIN policy, normalization, paging/count metadata, and validation.
 - `SqlUtility.DataExplorer.ps1`: UI-neutral builder validation and safe preview/editor SQL construction.
 - `SqlUtility.Database.ps1`: fixed catalog queries, typed command execution, neutral metadata/results, timeout, cancellation where possible, and SQL-resource disposal.
@@ -244,8 +246,8 @@ Add `tests/Test-DataExplorer.ps1` for the UI-neutral module. Cover:
 
 Extend:
 
-- `Test-Config.ps1`: schema 1 in-memory migration, schema 2 validation and round trips, inclusive/exclusive preview-limit bounds, copy preservation, environmental/corruption behavior, and safe writes.
-- `Test-Database.ps1`: physical-table catalog SQL, physical-table-only behavior, column metadata, typed parameters without `AddWithValue`, bounded preview reads, timeout forwarding, executor injection, cancellation where possible, and deterministic disposal.
+- `Test-Config.ps1`: schema 1/2 in-memory migration, schema 3 validation and round trips, inclusive/exclusive setting bounds, copy preservation, environmental/corruption behavior, and safe writes.
+- `Test-Database.ps1`: physical-table catalog SQL, physical-table-only behavior, column metadata, typed parameters without `AddWithValue`, bounded sequential preview reads, result-data-limit rejection without partial results, timeout forwarding, executor injection, cancellation where possible, and deterministic disposal.
 - `Test-SqlUtilityUi.ps1`: tab loading/refresh, no work on table selection, first/later Preview, all-selected default, native list setup, filter rows, button states, snapshot/builder independence, failure preservation, table changes, connection reset, Send-to-Query confirmation, and exact preview export handoff.
 - `Test-Launcher.ps1`: the exact seven-file runtime distribution, relative loading of `SqlUtility.DataExplorer.ps1`, Windows PowerShell 5.1 syntax boundaries, and unchanged launcher behavior from an external working directory.
 - `Test-All.ps1`: include the new focused suite.
@@ -262,7 +264,8 @@ Local tests do not prove target-environment behavior. External acceptance remain
 - Automatic/refresh table discovery and metadata visibility under the signed-in Windows identity.
 - Preview behavior and timeout on representative large, wide, indexed, and unindexed live tables.
 - Generated SQL execution against representative SQL Server data types and collations.
-- Configuration version 1 migration and version 2 reload from the application directory/cloud drive.
+- Configuration version 1/2 migration and version 3 reload from the application directory/cloud drive.
+- Result-data-limit rejection for representative `nvarchar(max)` and `varbinary(max)` preview values without replacing the prior preview snapshot.
 - Export Preview creation, overwrite behavior, and opening the workbook in desktop Excel.
 
 No live SQL Server, Citrix, cloud-drive, or desktop Excel acceptance is claimed by local verification.

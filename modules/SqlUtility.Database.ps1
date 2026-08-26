@@ -90,6 +90,182 @@ function Copy-SqlUtilityDataRows {
     return (, $copy)
 }
 
+function Read-SqlUtilitySequentialValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Reader,
+        [Parameter(Mandatory = $true)][int] $Ordinal,
+        [Parameter(Mandatory = $true)][long] $RetainedDataBytes,
+        [Parameter(Mandatory = $true)][long] $MaximumResultDataBytes,
+        [long] $MaximumTextCharacters = [long]::MaxValue,
+        [long] $MaximumBinaryBytes = [long]::MaxValue
+    )
+
+    if ($Reader.IsDBNull($Ordinal)) {
+        return [pscustomobject]@{ Value = [DBNull]::Value; RetainedDataBytes = $RetainedDataBytes }
+    }
+
+    $fieldType = $Reader.GetFieldType($Ordinal)
+    $columnName = $Reader.GetName($Ordinal)
+    if ($fieldType -eq [string]) {
+        $characterCount = [long] $Reader.GetChars($Ordinal, 0, $null, 0, 0)
+        if ($characterCount -gt $MaximumTextCharacters) {
+            throw [System.InvalidOperationException]::new('Excel cells cannot contain more than 32,767 characters.')
+        }
+        if ($characterCount -gt ([long]::MaxValue / 4) -or
+            $RetainedDataBytes -gt ($MaximumResultDataBytes - ($characterCount * 4))) {
+            throw [System.InvalidOperationException]::new(
+                "Result data exceeded the configured limit while reading column '$columnName'. Please review the selected columns and filters."
+            )
+        }
+
+        $characters = [char[]]::new([int] $characterCount)
+        $charactersRead = 0L
+        while ($charactersRead -lt $characterCount) {
+            $readCount = [int] $Reader.GetChars(
+                $Ordinal,
+                $charactersRead,
+                $characters,
+                [int] $charactersRead,
+                [int] ($characterCount - $charactersRead)
+            )
+            if ($readCount -le 0) {
+                throw [System.Data.DataException]::new("Column '$columnName' ended before its reported character length.")
+            }
+            $charactersRead += $readCount
+        }
+        $value = if ($characterCount -eq 0) { '' } else { [string]::new($characters) }
+        return [pscustomobject]@{
+            Value = $value
+            RetainedDataBytes = $RetainedDataBytes + ($characterCount * 2)
+        }
+    }
+
+    if ($fieldType -eq [byte[]]) {
+        $byteCount = [long] $Reader.GetBytes($Ordinal, 0, $null, 0, 0)
+        if ($byteCount -gt $MaximumBinaryBytes) {
+            throw [System.InvalidOperationException]::new('Excel cells cannot contain the hexadecimal text for this binary value.')
+        }
+        if ($byteCount -gt $MaximumResultDataBytes -or
+            $RetainedDataBytes -gt ($MaximumResultDataBytes - $byteCount)) {
+            throw [System.InvalidOperationException]::new(
+                "Result data exceeded the configured limit while reading column '$columnName'. Please review the selected columns and filters."
+            )
+        }
+
+        $bytes = [byte[]]::new([int] $byteCount)
+        $bytesRead = 0L
+        while ($bytesRead -lt $byteCount) {
+            $readCount = [int] $Reader.GetBytes(
+                $Ordinal,
+                $bytesRead,
+                $bytes,
+                [int] $bytesRead,
+                [int] ($byteCount - $bytesRead)
+            )
+            if ($readCount -le 0) {
+                throw [System.Data.DataException]::new("Column '$columnName' ended before its reported byte length.")
+            }
+            $bytesRead += $readCount
+        }
+        return [pscustomobject]@{
+            Value = $bytes
+            RetainedDataBytes = $RetainedDataBytes + $byteCount
+        }
+    }
+
+    return [pscustomobject]@{
+        Value = $Reader.GetValue($Ordinal)
+        RetainedDataBytes = $RetainedDataBytes
+    }
+}
+
+function Read-SqlUtilityResultTable {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Reader,
+        [Parameter(Mandatory = $true)][int] $MaximumRows,
+        [Parameter(Mandatory = $true)][long] $MaximumResultDataBytes
+    )
+
+    $schemaTable = $Reader.GetSchemaTable()
+    $columns = @(
+        for ($ordinal = 0; $ordinal -lt $Reader.FieldCount; $ordinal++) {
+            $columnName = $Reader.GetName($ordinal)
+            $columnType = $Reader.GetFieldType($ordinal)
+            if ($null -ne $schemaTable -and $ordinal -lt $schemaTable.Rows.Count) {
+                if ($null -ne $schemaTable.Rows[$ordinal].ColumnName) {
+                    $columnName = [string] $schemaTable.Rows[$ordinal].ColumnName
+                }
+                if ($schemaTable.Rows[$ordinal].DataType -is [type]) {
+                    $columnType = [type] $schemaTable.Rows[$ordinal].DataType
+                }
+            }
+
+            [pscustomobject]@{
+                Name = $columnName
+                DataType = $columnType
+                Ordinal = $ordinal
+            }
+        }
+    )
+    $table = New-SqlUtilityResultTable -Columns $columns
+    $retainedDataBytes = 0L
+    $rowCount = 0
+    while ($rowCount -lt $MaximumRows -and $Reader.Read()) {
+        $row = $table.NewRow()
+        for ($ordinal = 0; $ordinal -lt $Reader.FieldCount; $ordinal++) {
+            $readResult = Read-SqlUtilitySequentialValue -Reader $Reader -Ordinal $ordinal `
+                -RetainedDataBytes $retainedDataBytes -MaximumResultDataBytes $MaximumResultDataBytes
+            $row[$ordinal] = $readResult.Value
+            $retainedDataBytes = [long] $readResult.RetainedDataBytes
+        }
+        [void] $table.Rows.Add($row)
+        $rowCount++
+    }
+
+    return (, $table)
+}
+
+function Invoke-SqlUtilityBoundedResultRead {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Reader,
+        [Parameter(Mandatory = $true)][int] $MaximumRows,
+        [Parameter(Mandatory = $true)][long] $MaximumResultDataBytes,
+        [Parameter(Mandatory = $true)][scriptblock] $Cancel
+    )
+
+    try {
+        return Read-SqlUtilityResultTable -Reader $Reader -MaximumRows $MaximumRows `
+            -MaximumResultDataBytes $MaximumResultDataBytes
+    }
+    catch {
+        try { $null = & $Cancel } catch { }
+        throw
+    }
+}
+
+function Read-SqlUtilityStreamRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)] $Reader,
+        [Parameter(Mandatory = $true)][long] $MaximumTextCharacters,
+        [Parameter(Mandatory = $true)][long] $MaximumBinaryBytes
+    )
+
+    $values = [object[]]::new($Reader.FieldCount)
+    $retainedDataBytes = 0L
+    for ($ordinal = 0; $ordinal -lt $Reader.FieldCount; $ordinal++) {
+        $readResult = Read-SqlUtilitySequentialValue -Reader $Reader -Ordinal $ordinal `
+            -RetainedDataBytes $retainedDataBytes -MaximumResultDataBytes ([long]::MaxValue) `
+            -MaximumTextCharacters $MaximumTextCharacters -MaximumBinaryBytes $MaximumBinaryBytes
+        $values[$ordinal] = $readResult.Value
+        $retainedDataBytes = [long] $readResult.RetainedDataBytes
+    }
+    return (, $values)
+}
+
 function Add-SqlUtilityCommandParameters(
     $Command,
     [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $ParameterDescriptors
@@ -110,7 +286,8 @@ function Invoke-SqlUtilityTableExecutor {
         [Parameter(Mandatory = $true)][string] $CommandText,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]] $ParameterDescriptors,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
-        [Parameter(Mandatory = $true)][int] $MaximumRows
+        [Parameter(Mandatory = $true)][int] $MaximumRows,
+        [long] $MaximumResultDataBytes = [long]::MaxValue
     )
 
     $connection = [System.Data.SqlClient.SqlConnection]::new($ConnectionString)
@@ -125,41 +302,11 @@ function Invoke-SqlUtilityTableExecutor {
 
             $reader = $null
             try {
-                $reader = $command.ExecuteReader()
-                $schemaTable = $reader.GetSchemaTable()
-                $columns = @(
-                    for ($ordinal = 0; $ordinal -lt $reader.FieldCount; $ordinal++) {
-                        $columnName = $reader.GetName($ordinal)
-                        $columnType = $reader.GetFieldType($ordinal)
-                        if ($null -ne $schemaTable -and $ordinal -lt $schemaTable.Rows.Count) {
-                            if ($null -ne $schemaTable.Rows[$ordinal].ColumnName) {
-                                $columnName = [string] $schemaTable.Rows[$ordinal].ColumnName
-                            }
-                            if ($schemaTable.Rows[$ordinal].DataType -is [type]) {
-                                $columnType = [type] $schemaTable.Rows[$ordinal].DataType
-                            }
-                        }
+                $reader = $command.ExecuteReader([System.Data.CommandBehavior]::SequentialAccess)
+                $table = Invoke-SqlUtilityBoundedResultRead -Reader $reader -MaximumRows $MaximumRows `
+                    -MaximumResultDataBytes $MaximumResultDataBytes -Cancel { $command.Cancel() }
 
-                        [pscustomobject]@{
-                            Name = $columnName
-                            DataType = $columnType
-                            Ordinal = $ordinal
-                        }
-                    }
-                )
-                $table = New-SqlUtilityResultTable -Columns $columns
-
-                $rowCount = 0
-                while ($rowCount -lt $MaximumRows -and $reader.Read()) {
-                    $row = $table.NewRow()
-                    for ($ordinal = 0; $ordinal -lt $reader.FieldCount; $ordinal++) {
-                        $row[$ordinal] = $reader.GetValue($ordinal)
-                    }
-                    [void] $table.Rows.Add($row)
-                    $rowCount++
-                }
-
-                if ($rowCount -ge $MaximumRows) {
+                if ($table.Rows.Count -ge $MaximumRows) {
                     try { $command.Cancel() } catch { }
                 }
                 return (, $table)
@@ -390,6 +537,7 @@ function Invoke-SqlUtilityDataPreview {
         [Parameter(Mandatory = $true)] $Query,
         [Parameter(Mandatory = $true)][object] $PreviewRowLimit,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [ValidateRange(128, 1024)][int] $ResultDataLimitMiB = 256,
         [scriptblock] $Executor
     )
 
@@ -405,12 +553,14 @@ function Invoke-SqlUtilityDataPreview {
     }
 
     $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    $maximumResultDataBytes = [long] $ResultDataLimitMiB * 1MB
     if ($null -eq $Executor) {
         return Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $Query.PreviewSql `
             -ParameterDescriptors $Query.PreviewParameters -CommandTimeoutSeconds $CommandTimeoutSeconds `
-            -MaximumRows ([int] $previewLimitValue)
+            -MaximumRows ([int] $previewLimitValue) -MaximumResultDataBytes $maximumResultDataBytes
     }
-    return & $Executor $connectionString $Query.PreviewSql $Query.PreviewParameters $CommandTimeoutSeconds ([int] $previewLimitValue)
+    return & $Executor $connectionString $Query.PreviewSql $Query.PreviewParameters $CommandTimeoutSeconds `
+        ([int] $previewLimitValue) $maximumResultDataBytes
 }
 
 function Invoke-SqlUtilityOrderedPage {
@@ -421,6 +571,7 @@ function Invoke-SqlUtilityOrderedPage {
         [Parameter(Mandatory = $true)][string] $Sql,
         [Parameter(Mandatory = $true)][int] $PageNumber,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [ValidateRange(128, 1024)][int] $ResultDataLimitMiB = 256,
         [scriptblock] $Executor
     )
 
@@ -429,6 +580,7 @@ function Invoke-SqlUtilityOrderedPage {
     }
 
     $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    $maximumResultDataBytes = [long] $ResultDataLimitMiB * 1MB
     $commandText = $Sql + "`r`nOFFSET @Offset ROWS FETCH NEXT @FetchCount ROWS ONLY"
     $parameters = [object[]] @(
         [pscustomobject]@{ Name = 'Offset'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = (($PageNumber - 1) * 500) },
@@ -436,10 +588,11 @@ function Invoke-SqlUtilityOrderedPage {
     )
     if ($null -eq $Executor) {
         $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $commandText `
-            -ParameterDescriptors $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows 501
+            -ParameterDescriptors $parameters -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows 501 `
+            -MaximumResultDataBytes $maximumResultDataBytes
     }
     else {
-        $data = & $Executor $connectionString $commandText $parameters $CommandTimeoutSeconds 501
+        $data = & $Executor $connectionString $commandText $parameters $CommandTimeoutSeconds 501 $maximumResultDataBytes
     }
 
     $hasNext = $data.Rows.Count -gt 500
@@ -456,17 +609,21 @@ function Invoke-SqlUtilityUnorderedQuery {
         [Parameter(Mandatory = $true)][string] $Sql,
         [Parameter(Mandatory = $true)][int] $RowLimit,
         [Parameter(Mandatory = $true)][int] $CommandTimeoutSeconds,
+        [ValidateRange(128, 1024)][int] $ResultDataLimitMiB = 256,
         [scriptblock] $Executor
     )
 
     $connectionString = New-SqlUtilityConnectionString -Server $Server -Database $Database
+    $maximumResultDataBytes = [long] $ResultDataLimitMiB * 1MB
     $maximumRows = $RowLimit + 1
     if ($null -eq $Executor) {
         $data = Invoke-SqlUtilityTableExecutor -ConnectionString $connectionString -CommandText $Sql `
-            -ParameterDescriptors ([object[]] @()) -CommandTimeoutSeconds $CommandTimeoutSeconds -MaximumRows $maximumRows
+            -ParameterDescriptors ([object[]] @()) -CommandTimeoutSeconds $CommandTimeoutSeconds `
+            -MaximumRows $maximumRows -MaximumResultDataBytes $maximumResultDataBytes
     }
     else {
-        $data = & $Executor $connectionString $Sql ([object[]] @()) $CommandTimeoutSeconds $maximumRows
+        $data = & $Executor $connectionString $Sql ([object[]] @()) $CommandTimeoutSeconds $maximumRows `
+            $maximumResultDataBytes
     }
 
     $isTruncated = $data.Rows.Count -gt $RowLimit
@@ -515,7 +672,7 @@ function Invoke-SqlUtilityStreamExecutor {
             $command.CommandTimeout = $CommandTimeoutSeconds
             $reader = $null
             try {
-                $reader = $command.ExecuteReader()
+                $reader = $command.ExecuteReader([System.Data.CommandBehavior]::SequentialAccess)
                 $schema = @(
                     for ($ordinal = 0; $ordinal -lt $reader.FieldCount; $ordinal++) {
                         [pscustomobject][ordered]@{
@@ -533,8 +690,8 @@ function Invoke-SqlUtilityStreamExecutor {
                         break
                     }
 
-                    $values = [object[]]::new($reader.FieldCount)
-                    [void] $reader.GetValues($values)
+                    $values = Read-SqlUtilityStreamRow -Reader $reader -MaximumTextCharacters 32767 `
+                        -MaximumBinaryBytes 16382
                     $null = & $OnRow $values
                 }
             }

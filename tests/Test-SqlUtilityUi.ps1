@@ -155,13 +155,14 @@ function New-TestServices {
             return $recorder.ValidationResult
         }.GetNewClosure()
         ExecuteOrderedPage = {
-            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds)
+            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds, $ResultDataLimitMiB)
             [void] $recorder.OrderedCalls.Add([pscustomobject]@{
                 Server = $Server
                 Database = $Database
                 Sql = $Sql
                 PageNumber = $PageNumber
                 TimeoutSeconds = $TimeoutSeconds
+                ResultDataLimitMiB = $ResultDataLimitMiB
             })
             if ($null -ne $recorder.ExecuteError) {
                 throw [System.TimeoutException]::new([string] $recorder.ExecuteError)
@@ -169,13 +170,14 @@ function New-TestServices {
             return $recorder.OrderedResults[[int] $PageNumber]
         }.GetNewClosure()
         ExecuteUnordered = {
-            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds)
+            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds, $ResultDataLimitMiB)
             [void] $recorder.UnorderedCalls.Add([pscustomobject]@{
                 Server = $Server
                 Database = $Database
                 Sql = $Sql
                 RowLimit = $RowLimit
                 TimeoutSeconds = $TimeoutSeconds
+                ResultDataLimitMiB = $ResultDataLimitMiB
             })
             if ($null -ne $recorder.ExecuteError) {
                 throw [System.InvalidOperationException]::new([string] $recorder.ExecuteError)
@@ -266,8 +268,8 @@ function New-TestServices {
             return New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit
         }.GetNewClosure()
         ExecuteDataPreview = {
-            param($Server,$Database,$Query,$Limit,$TimeoutSeconds)
-            [void] $recorder.PreviewCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;Query=$Query;Limit=$Limit;TimeoutSeconds=$TimeoutSeconds})
+            param($Server,$Database,$Query,$Limit,$TimeoutSeconds,$ResultDataLimitMiB)
+            [void] $recorder.PreviewCalls.Add([pscustomobject]@{Server=$Server;Database=$Database;Query=$Query;Limit=$Limit;TimeoutSeconds=$TimeoutSeconds;ResultDataLimitMiB=$ResultDataLimitMiB})
             if ($recorder.PreviewError) { throw $recorder.PreviewError }
             return (, $recorder.PreviewResult)
         }.GetNewClosure()
@@ -367,6 +369,7 @@ $requiredControlNames = @(
     'ConnectButton', 'SavedConnectionsList', 'DeleteConnectionButton',
     'WorkspacePanel', 'ActiveConnectionLabel', 'ChangeConnectionButton',
     'WorkspaceTabs', 'QueryTab', 'SettingsTab', 'UnorderedLimitNumeric',
+    'ResultDataLimitNumeric',
     'QueryExportTimeoutNumeric', 'SaveSettingsButton', 'MainStatusLabel',
     'SqlEditor', 'ExecuteButton', 'ExportButton', 'CountButton', 'PreviousPageButton',
     'NextPageButton', 'PageStatusLabel', 'PagingHelpLabel', 'QueryActionLayout',
@@ -556,6 +559,7 @@ try {
     $savedList = Get-TestControl $initialForm 'SavedConnectionsList'
     $unorderedNumeric = Get-TestControl $initialForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $initialForm 'QueryExportTimeoutNumeric'
+    $resultDataNumeric = Get-TestControl $initialForm 'ResultDataLimitNumeric'
     $settingsTab = Get-TestControl $initialForm 'SettingsTab'
     $countButton = Get-TestControl $initialForm 'CountButton'
 
@@ -578,10 +582,14 @@ try {
     Assert-Equal 5 ([int] $timeoutNumeric.Minimum) 'Query/Export timeout minimum is exact'
     Assert-Equal 3600 ([int] $timeoutNumeric.Maximum) 'Query/Export timeout maximum is exact'
     Assert-Equal 120 ([int] $timeoutNumeric.Value) 'Query/Export timeout default is exact'
+    Assert-Equal 128 ([int] $resultDataNumeric.Minimum) 'Result data limit minimum is exact'
+    Assert-Equal 1024 ([int] $resultDataNumeric.Maximum) 'Result data limit maximum is exact'
+    Assert-Equal 256 ([int] $resultDataNumeric.Value) 'Result data limit default is exact'
     Assert-True ($settingsTab.Text -eq 'Settings') 'Workspace exposes the Settings tab label'
     $settingsText = ($settingsTab.Controls | ForEach-Object { $_.Text }) -join ' '
     Assert-True ($settingsText -match 'Maximum unordered rows') 'Settings labels the unordered-row limit'
     Assert-True ($settingsText -match 'Query/Export timeout \(seconds\)') 'Settings labels the shared timeout'
+    Assert-True ($settingsText -match 'Result data limit \(MiB\)') 'Settings labels the result data limit'
     Assert-True ($settingsText -match 'interactive queries') 'Settings help covers interactive queries'
     Assert-True ($settingsText -match 'complete Excel export') 'Settings help covers complete Excel export'
     Assert-True ($settingsText -match 'connection timeout remains fixed and separate') 'Settings help separates connection timeout'
@@ -733,6 +741,7 @@ try {
     Set-SqlUtilityDataExplorerPreviewDisplay -Form $settingsForm -Candidate $settingsPreview
     $unorderedNumeric = Get-TestControl $settingsForm 'UnorderedLimitNumeric'
     $timeoutNumeric = Get-TestControl $settingsForm 'QueryExportTimeoutNumeric'
+    $resultDataNumeric = Get-TestControl $settingsForm 'ResultDataLimitNumeric'
     $saveSettings = Get-TestControl $settingsForm 'SaveSettingsButton'
     Set-SqlUtilityStage -Form $settingsForm -Stage 'Workspace'
     $settingsTab = Get-TestControl $settingsForm 'SettingsTab'
@@ -742,22 +751,26 @@ try {
     Assert-Equal 1 $settingsHelpMatches.Count 'Settings contains one timeout help label'
     $settingsHelp = $settingsHelpMatches[0]
     Assert-Equal $false $previewNumeric.Bounds.IntersectsWith($settingsHelp.Bounds) 'Preview limit control does not overlap Settings help'
+    Assert-Equal $false $resultDataNumeric.Bounds.IntersectsWith($settingsHelp.Bounds) 'Result data limit control does not overlap Settings help'
     Assert-True ($saveSettings.Top -ge $settingsHelp.Bottom) 'Save Settings is positioned below help text'
     $unorderedNumeric.Value = 1500
     $timeoutNumeric.Value = 300
+    $resultDataNumeric.Value = 512
     $settingsHarness.Recorder.WriteError = 'read-only directory'
     $saveSettings.PerformClick()
     $failedCandidate = $settingsHarness.Recorder.WriteCalls[0].Config
-    Assert-Equal 2 $failedCandidate.schemaVersion 'Settings candidate writes schema version 2'
+    Assert-Equal 3 $failedCandidate.schemaVersion 'Settings candidate writes schema version 3'
     Assert-Equal 275 $failedCandidate.previewRowLimit 'Settings candidate writes visible preview limit'
     Assert-Equal 1500 $failedCandidate.unorderedRowLimit 'Settings candidate writes unordered limit'
     Assert-Equal 300 $failedCandidate.queryExportTimeoutSeconds 'Settings candidate writes timeout'
+    Assert-Equal 512 $failedCandidate.resultDataLimitMiB 'Settings candidate writes result data limit'
     Assert-Equal 2 @($failedCandidate.connections).Count 'Settings candidate preserves connections'
     Assert-Equal 'SavedServer' $failedCandidate.connections[0].server 'Settings candidate preserves first connection'
     Assert-Equal 'SecondDatabase' $failedCandidate.connections[1].database 'Settings candidate preserves second connection'
     Assert-Equal 1000 $settingsForm.Tag.Config.unorderedRowLimit 'Failed settings write keeps active row limit'
     Assert-Equal 120 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Failed settings write keeps active timeout'
     Assert-Equal 250 $settingsForm.Tag.Config.previewRowLimit 'Failed settings write keeps active preview limit'
+    Assert-Equal 256 $settingsForm.Tag.Config.resultDataLimitMiB 'Failed settings write keeps active result data limit'
     Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Failed settings write preserves displayed preview snapshot'
     Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Failed settings write preserves displayed preview grid'
     Assert-Equal $false $settingsForm.Tag.IsBusy 'Settings exception restores busy state'
@@ -766,11 +779,13 @@ try {
     $saveSettings.PerformClick()
     Assert-Equal 1500 $settingsForm.Tag.Config.unorderedRowLimit 'Successful settings write enters row limit state'
     Assert-Equal 300 $settingsForm.Tag.Config.queryExportTimeoutSeconds 'Successful settings write enters timeout state'
+    Assert-Equal 512 $settingsForm.Tag.Config.resultDataLimitMiB 'Successful settings write enters result data limit state'
     $successfulCandidate = $settingsHarness.Recorder.WriteCalls[1].Config
-    Assert-Equal 2 $successfulCandidate.schemaVersion 'Successful Settings candidate keeps schema version 2'
+    Assert-Equal 3 $successfulCandidate.schemaVersion 'Successful Settings candidate keeps schema version 3'
     Assert-Equal 275 $successfulCandidate.previewRowLimit 'Successful Settings candidate keeps preview limit'
     Assert-Equal 1500 $successfulCandidate.unorderedRowLimit 'Successful Settings candidate keeps unordered limit'
     Assert-Equal 300 $successfulCandidate.queryExportTimeoutSeconds 'Successful Settings candidate keeps timeout'
+    Assert-Equal 512 $successfulCandidate.resultDataLimitMiB 'Successful Settings candidate keeps result data limit'
     Assert-Equal 2 @($successfulCandidate.connections).Count 'Successful Settings candidate keeps connections'
     Assert-Equal 'SavedServer' $successfulCandidate.connections[0].server 'Successful Settings candidate keeps first server'
     Assert-Equal 'SavedDatabase' $successfulCandidate.connections[0].database 'Successful Settings candidate keeps first database'
@@ -778,6 +793,7 @@ try {
     Assert-Equal 'SecondDatabase' $successfulCandidate.connections[1].database 'Successful Settings candidate keeps second database'
     Assert-Equal 275 $settingsForm.Tag.Config.previewRowLimit 'Successful settings write enters preview limit state'
     Assert-Equal 275 ([int] $previewNumeric.Value) 'Successful settings write synchronizes preview numeric'
+    Assert-Equal 512 ([int] $resultDataNumeric.Value) 'Successful settings write synchronizes result data numeric'
     Assert-True ([object]::ReferenceEquals($settingsPreview,$settingsForm.Tag.DataExplorerPreview)) 'Successful settings write preserves displayed preview snapshot'
     Assert-True ([object]::ReferenceEquals($settingsPreviewData,(Get-TestControl $settingsForm 'PreviewGrid').DataSource)) 'Successful settings write preserves displayed preview grid'
 }
@@ -900,6 +916,7 @@ try {
     Assert-Equal 'SELECT Id, Name FROM dbo.Items ORDER BY Id' $orderedHarness.Recorder.OrderedCalls[0].Sql 'Ordered Execute uses normalized SQL'
     Assert-Equal 1 $orderedHarness.Recorder.OrderedCalls[0].PageNumber 'Ordered Execute requests page one'
     Assert-Equal 120 $orderedHarness.Recorder.OrderedCalls[0].TimeoutSeconds 'Ordered Execute uses configured timeout'
+    Assert-Equal 256 $orderedHarness.Recorder.OrderedCalls[0].ResultDataLimitMiB 'Ordered Execute uses configured result data limit'
     Assert-Equal 'SELECT Id, Name FROM dbo.Items' $orderedHarness.Recorder.BuildCountCalls[0].CountSourceSql `
         'Execute forwards the validated order-free count source'
     Assert-Equal 2 $orderedHarness.Recorder.BuildCountCalls[0].OutputColumnCount `
@@ -1022,6 +1039,7 @@ try {
 
     Assert-Equal 1 $unorderedHarness.Recorder.UnorderedCalls.Count 'Unordered Execute calls unordered service once'
     Assert-Equal 1000 $unorderedHarness.Recorder.UnorderedCalls[0].RowLimit 'Unordered Execute uses configured row limit'
+    Assert-Equal 256 $unorderedHarness.Recorder.UnorderedCalls[0].ResultDataLimitMiB 'Unordered Execute uses configured result data limit'
     Assert-Equal 0 $unorderedHarness.Recorder.OrderedCalls.Count 'Unordered Execute never calls ordered service'
     Assert-Equal 0 $unorderedHarness.Recorder.Messages.Count 'Complete unordered result shows no truncation popup'
     Assert-Equal $true (Get-TestControl $unorderedForm 'ExportButton').Enabled 'Complete unordered result enables export'
@@ -1412,7 +1430,7 @@ try {
     Assert-Equal 1000 $recovered.unorderedRowLimit 'Confirmed reset writes default configuration'
 
     $futurePath = Join-Path $startupRoot 'future.json'
-    $futureText = '{"schemaVersion":3,"previewRowLimit":100,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
+    $futureText = '{"schemaVersion":4,"previewRowLimit":100,"resultDataLimitMiB":256,"unorderedRowLimit":1000,"queryExportTimeoutSeconds":120,"connections":[]}'
     $futureBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($futureText)
     [System.IO.File]::WriteAllBytes($futurePath, $futureBytes)
     $futureHarness = New-TestServices
@@ -1840,6 +1858,7 @@ try {
     Assert-Equal 1 $explorerHarness.Recorder.ColumnCalls.Count 'First Preview loads metadata once'
     Assert-Equal 1 $explorerHarness.Recorder.BuildExplorerCalls.Count 'First Preview builds one query'
     Assert-Equal 1 $explorerHarness.Recorder.PreviewCalls.Count 'First Preview executes one bounded query'
+    Assert-Equal 256 $explorerHarness.Recorder.PreviewCalls[0].ResultDataLimitMiB 'Preview uses configured result data limit'
     Assert-Equal 4 (Get-TestControl $explorerForm 'OutputColumnsList').CheckedItems.Count 'First Preview selects all columns'
     $outputList = Get-TestControl $explorerForm 'OutputColumnsList'
     $initialCheckedNames = @($outputList.CheckedItems | ForEach-Object Name) -join ','

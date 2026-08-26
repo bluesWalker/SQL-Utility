@@ -68,8 +68,9 @@ function New-SqlUtilityDefaultConfig {
     param()
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         previewRowLimit = 100
+        resultDataLimitMiB = 256
         unorderedRowLimit = 1000
         queryExportTimeoutSeconds = 120
         connections = @()
@@ -88,11 +89,21 @@ function ConvertTo-SqlUtilityValidatedConfig {
     }
     if ($schemaVersion -eq 1) {
         $previewRowLimit = 100
+        $resultDataLimitMiB = 256
     }
     elseif ($schemaVersion -eq 2) {
         $previewRowLimit = ConvertTo-SqlUtilityValidatedInteger `
             -Value (Get-SqlUtilityConfigPropertyValue -InputObject $InputObject -Name 'previewRowLimit') `
             -Minimum 10 -Maximum 500 -Name 'previewRowLimit'
+        $resultDataLimitMiB = 256
+    }
+    elseif ($schemaVersion -eq 3) {
+        $previewRowLimit = ConvertTo-SqlUtilityValidatedInteger `
+            -Value (Get-SqlUtilityConfigPropertyValue -InputObject $InputObject -Name 'previewRowLimit') `
+            -Minimum 10 -Maximum 500 -Name 'previewRowLimit'
+        $resultDataLimitMiB = ConvertTo-SqlUtilityValidatedInteger `
+            -Value (Get-SqlUtilityConfigPropertyValue -InputObject $InputObject -Name 'resultDataLimitMiB') `
+            -Minimum 128 -Maximum 1024 -Name 'resultDataLimitMiB'
     }
     else {
         throw [System.NotSupportedException]::new("Unsupported configuration schema version: $schemaVersion")
@@ -135,8 +146,9 @@ function ConvertTo-SqlUtilityValidatedConfig {
     }
 
     return [pscustomobject][ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         previewRowLimit = $previewRowLimit
+        resultDataLimitMiB = $resultDataLimitMiB
         unorderedRowLimit = $unorderedRowLimit
         queryExportTimeoutSeconds = $queryExportTimeoutSeconds
         connections = @($connections.ToArray())
@@ -291,6 +303,7 @@ function Add-SqlUtilitySavedConnection {
     return ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
         schemaVersion = $validated.schemaVersion
         previewRowLimit = $validated.previewRowLimit
+        resultDataLimitMiB = $validated.resultDataLimitMiB
         unorderedRowLimit = $validated.unorderedRowLimit
         queryExportTimeoutSeconds = $validated.queryExportTimeoutSeconds
         connections = @($connections.ToArray())
@@ -327,6 +340,7 @@ function Remove-SqlUtilitySavedConnection {
     return ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
         schemaVersion = $validated.schemaVersion
         previewRowLimit = $validated.previewRowLimit
+        resultDataLimitMiB = $validated.resultDataLimitMiB
         unorderedRowLimit = $validated.unorderedRowLimit
         queryExportTimeoutSeconds = $validated.queryExportTimeoutSeconds
         connections = @($connections.ToArray())

@@ -43,6 +43,102 @@ for ($ordinal = 0; $ordinal -lt $expectedDuplicateTypes.Count; $ordinal++) {
 }
 Assert-Equal 0 $duplicateSchema.Rows.Count 'Result schema parser does not add data rows'
 
+$boundedReader = [pscustomobject]@{
+    FieldCount = 2
+    Index = -1
+    Rows = @(
+        [object[]] @('abc', [byte[]] @(1, 2, 3)),
+        [object[]] @('1234567890', [byte[]] @(4, 5, 6))
+    )
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetSchemaTable -Value { return $null }
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetName -Value {
+    param($Ordinal)
+    return @('Name', 'Payload')[$Ordinal]
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetFieldType -Value {
+    param($Ordinal)
+    return @([string], [byte[]])[$Ordinal]
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name Read -Value {
+    $this.Index++
+    return $this.Index -lt $this.Rows.Count
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name IsDBNull -Value {
+    param($Ordinal)
+    return [DBNull]::Value.Equals($this.Rows[$this.Index][$Ordinal])
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetChars -Value {
+    param($Ordinal, $DataIndex, $Buffer, $BufferIndex, $Length)
+    $value = [string] $this.Rows[$this.Index][$Ordinal]
+    if ($null -eq $Buffer) { return [long] $value.Length }
+    $copyCount = [Math]::Min([int] $Length, $value.Length - [int] $DataIndex)
+    $value.CopyTo([int] $DataIndex, $Buffer, [int] $BufferIndex, $copyCount)
+    return [long] $copyCount
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetBytes -Value {
+    param($Ordinal, $DataIndex, $Buffer, $BufferIndex, $Length)
+    $value = [byte[]] $this.Rows[$this.Index][$Ordinal]
+    if ($null -eq $Buffer) { return [long] $value.Length }
+    $copyCount = [Math]::Min([int] $Length, $value.Length - [int] $DataIndex)
+    [Array]::Copy($value, [int] $DataIndex, $Buffer, [int] $BufferIndex, $copyCount)
+    return [long] $copyCount
+}
+$boundedReader | Add-Member -MemberType ScriptMethod -Name GetValue -Value {
+    param($Ordinal)
+    return $this.Rows[$this.Index][$Ordinal]
+}
+$boundedReader.Index = -1
+$withinLimitResult = Read-SqlUtilityResultTable -Reader $boundedReader -MaximumRows 1 -MaximumResultDataBytes 32
+Assert-Equal 1 $withinLimitResult.Rows.Count 'Result data limit retains a complete row that fits the budget'
+Assert-Equal 'abc' $withinLimitResult.Rows[0].Name 'Sequential text read preserves the exact value'
+Assert-Equal '1,2,3' (($withinLimitResult.Rows[0].Payload | ForEach-Object { [string] $_ }) -join ',') `
+    'Sequential binary read preserves the exact value'
+
+$boundedReader.Index = -1
+$boundedResult = $null
+$boundedError = $null
+try {
+    $boundedResult = Read-SqlUtilityResultTable -Reader $boundedReader -MaximumRows 10 -MaximumResultDataBytes 32
+}
+catch {
+    $boundedError = $_.Exception
+}
+Assert-Equal 'System.InvalidOperationException' $boundedError.GetType().FullName `
+    'Result data limit rejects the value that would exceed the allocation budget'
+Assert-True ($boundedError.Message -match "column 'Name'") `
+    'Result data limit identifies the column that exceeded the budget'
+Assert-True ($boundedError.Message -match 'review the selected columns and filters') `
+    'Result data limit tells the user how to reduce the result'
+Assert-Equal $null $boundedResult 'Result data limit never returns a partial table'
+
+$originalBoundedRows = $boundedReader.Rows
+$binaryLimitRow = [object[]]::new(2)
+$binaryLimitRow[0] = ''
+$binaryLimitRow[1] = [byte[]]::new(33)
+$boundedReader.Rows = @(, $binaryLimitRow)
+$boundedReader.Index = -1
+$binaryLimitError = $null
+try {
+    $null = Read-SqlUtilityResultTable -Reader $boundedReader -MaximumRows 1 -MaximumResultDataBytes 32
+}
+catch {
+    $binaryLimitError = $_.Exception
+}
+Assert-Equal 'System.InvalidOperationException' $binaryLimitError.GetType().FullName `
+    'Result data limit rejects a binary value that exceeds the budget'
+Assert-True ($binaryLimitError.Message -match "column 'Payload'") `
+    'Binary result data limit identifies the column that exceeded the budget'
+$boundedReader.Rows = $originalBoundedRows
+
+$boundedReader.Index = -1
+$boundedCancellation = [pscustomobject]@{ Count = 0 }
+Assert-Throws {
+    Invoke-SqlUtilityBoundedResultRead -Reader $boundedReader -MaximumRows 10 -MaximumResultDataBytes 32 `
+        -Cancel { $boundedCancellation.Count++ }
+} 'System.InvalidOperationException' 'Bounded reader propagates the result data limit error'
+Assert-Equal 1 $boundedCancellation.Count 'Result data limit cancels remaining database work once'
+
 $connectionString = New-SqlUtilityConnectionString -Server '  server.example  ' -Database '  UtilityDb  '
 $connectionBuilder = [System.Data.SqlClient.SqlConnectionStringBuilder]::new($connectionString)
 Assert-Equal 'server.example' $connectionBuilder.DataSource 'Connection string trims the server'
@@ -119,9 +215,10 @@ $previewQuery = [pscustomobject]@{
     PreviewParameters = [object[]] @([pscustomobject]@{ Name = 'PreviewRowLimit'; SqlDbType = [System.Data.SqlDbType]::Int; Size = 0; Precision = 0; Scale = 0; Value = 25 })
     EditorSql = 'SELECT [PlantID] FROM [dbo].[Plants];'
 }
-$preview = Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit 25 -CommandTimeoutSeconds 77 -Executor {
-    param($ConnectionString, $CommandText, $ParameterDescriptors, $CommandTimeoutSeconds, $MaximumRows)
-    $script:previewCall = [pscustomobject]@{ CommandText = $CommandText; ParameterDescriptors = $ParameterDescriptors; CommandTimeoutSeconds = $CommandTimeoutSeconds; MaximumRows = $MaximumRows }
+$preview = Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit 25 `
+    -CommandTimeoutSeconds 77 -ResultDataLimitMiB 512 -Executor {
+    param($ConnectionString, $CommandText, $ParameterDescriptors, $CommandTimeoutSeconds, $MaximumRows, $MaximumResultDataBytes)
+    $script:previewCall = [pscustomobject]@{ CommandText = $CommandText; ParameterDescriptors = $ParameterDescriptors; CommandTimeoutSeconds = $CommandTimeoutSeconds; MaximumRows = $MaximumRows; MaximumResultDataBytes = $MaximumResultDataBytes }
     return (, $previewTable)
 }
 Assert-True ([object]::ReferenceEquals($previewTable, $preview)) 'Preview returns executor DataTable directly'
@@ -129,6 +226,7 @@ Assert-Equal $previewQuery.PreviewSql $script:previewCall.CommandText 'Preview f
 Assert-True ([object]::ReferenceEquals($previewQuery.PreviewParameters, $script:previewCall.ParameterDescriptors)) 'Preview forwards typed descriptors'
 Assert-Equal 77 $script:previewCall.CommandTimeoutSeconds 'Preview forwards timeout'
 Assert-Equal 25 $script:previewCall.MaximumRows 'Preview uses exact configured maximum'
+Assert-Equal 536870912 $script:previewCall.MaximumResultDataBytes 'Preview forwards the configured result data limit in bytes'
 foreach ($invalidLimit in @(9, 501)) {
     Assert-Throws { Invoke-SqlUtilityDataPreview -Server 's' -Database 'd' -Query $previewQuery -PreviewRowLimit $invalidLimit -CommandTimeoutSeconds 5 -Executor { throw 'must not run' } } `
         'System.ArgumentOutOfRangeException' 'Preview rejects limits outside 10 through 500'
@@ -163,20 +261,21 @@ Assert-Equal 1 $script:connectionTestCall.MaximumRows 'Connection test bounds th
 foreach ($orderedCount in @(0, 500, 501)) {
     $script:orderedCall = $null
     $orderedExecutor = {
-        param($ConnectionString, $CommandText, $Parameters, $CommandTimeoutSeconds, $MaximumRows)
+        param($ConnectionString, $CommandText, $Parameters, $CommandTimeoutSeconds, $MaximumRows, $MaximumResultDataBytes)
         $script:orderedCall = [pscustomobject]@{
             ConnectionString = $ConnectionString
             CommandText = $CommandText
             Parameters = $Parameters
             CommandTimeoutSeconds = $CommandTimeoutSeconds
             MaximumRows = $MaximumRows
+            MaximumResultDataBytes = $MaximumResultDataBytes
         }
         return (, (New-NumberedTable $orderedCount))
     }
 
     $ordered = Invoke-SqlUtilityOrderedPage -Server 's' -Database 'd' `
         -Sql 'SELECT Id FROM dbo.Items ORDER BY Id' -PageNumber 2 `
-        -CommandTimeoutSeconds 120 -Executor $orderedExecutor
+        -CommandTimeoutSeconds 120 -ResultDataLimitMiB 384 -Executor $orderedExecutor
 
     $expectedDisplayed = [Math]::Min($orderedCount, 500)
     Assert-Equal $expectedDisplayed $ordered.Data.Rows.Count "Ordered $orderedCount-row result hides only a sentinel"
@@ -198,6 +297,7 @@ Assert-Equal 500 (Find-ParameterDescriptor $script:orderedCall.Parameters 'Offse
 Assert-Equal 501 (Find-ParameterDescriptor $script:orderedCall.Parameters 'FetchCount').Value 'Ordered paging probes one sentinel row'
 Assert-Equal 120 $script:orderedCall.CommandTimeoutSeconds 'Ordered paging forwards the command timeout'
 Assert-Equal 501 $script:orderedCall.MaximumRows 'Ordered paging bounds the executor read'
+Assert-Equal 402653184 $script:orderedCall.MaximumResultDataBytes 'Ordered paging forwards the configured result data limit in bytes'
 
 $orderedFirst = Invoke-SqlUtilityOrderedPage -Server 's' -Database 'd' -Sql 'SELECT Id FROM dbo.Items ORDER BY Id' `
     -PageNumber 1 -CommandTimeoutSeconds 5 -Executor { param($a, $b, $c, $d, $e) return (, (New-NumberedTable 0)) }
@@ -217,20 +317,21 @@ foreach ($unorderedCount in @(999, 1000, 1001)) {
     $script:unorderedCall = $null
     $sourceTable = New-NumberedTable $unorderedCount
     $unorderedExecutor = {
-        param($ConnectionString, $CommandText, $Parameters, $CommandTimeoutSeconds, $MaximumRows)
+        param($ConnectionString, $CommandText, $Parameters, $CommandTimeoutSeconds, $MaximumRows, $MaximumResultDataBytes)
         $script:unorderedCall = [pscustomobject]@{
             ConnectionString = $ConnectionString
             CommandText = $CommandText
             Parameters = $Parameters
             CommandTimeoutSeconds = $CommandTimeoutSeconds
             MaximumRows = $MaximumRows
+            MaximumResultDataBytes = $MaximumResultDataBytes
         }
         return (, $sourceTable)
     }
 
     $unordered = Invoke-SqlUtilityUnorderedQuery -Server 's' -Database 'd' `
         -Sql 'SELECT Id FROM dbo.Items' -RowLimit 1000 -CommandTimeoutSeconds 321 `
-        -Executor $unorderedExecutor
+        -ResultDataLimitMiB 640 -Executor $unorderedExecutor
 
     $expectedCached = [Math]::Min($unorderedCount, 1000)
     Assert-Equal 500 $unordered.Data.Rows.Count "Unordered $unorderedCount-row result displays the first local page"
@@ -247,6 +348,7 @@ Assert-Equal 'SELECT Id FROM dbo.Items' $script:unorderedCall.CommandText 'Unord
 Assert-Equal 0 $script:unorderedCall.Parameters.Count 'Unordered execution sends no parameters'
 Assert-Equal 321 $script:unorderedCall.CommandTimeoutSeconds 'Unordered execution forwards the command timeout'
 Assert-Equal 1001 $script:unorderedCall.MaximumRows 'Unordered execution requests the limit plus one'
+Assert-Equal 671088640 $script:unorderedCall.MaximumResultDataBytes 'Unordered execution forwards the configured result data limit in bytes'
 Assert-Equal 1000 $unordered.CachedData.Rows[999].Id 'Unordered execution removes only the sentinel row'
 
 $cached = New-NumberedTable 750
@@ -278,6 +380,39 @@ Assert-Equal ([int]) $emptyLocal.Data.Columns[0].DataType 'Empty local page pres
 Assert-Throws {
     Get-SqlUtilityLocalPage -CachedData $cached -PageNumber 0 -IsComplete $true -IsTruncated $false
 } 'System.ArgumentOutOfRangeException' 'Local paging rejects page zero'
+
+$boundedReader.Index = -1
+[void] $boundedReader.Read()
+$streamCellError = $null
+try {
+    $null = Read-SqlUtilityStreamRow -Reader $boundedReader -MaximumTextCharacters 2 -MaximumBinaryBytes 10
+}
+catch {
+    $streamCellError = $_.Exception
+}
+Assert-Equal 'System.InvalidOperationException' $streamCellError.GetType().FullName `
+    'Streaming export rejects oversized text before returning the row'
+Assert-True ($streamCellError.Message -match '32,767 characters') `
+    'Streaming export reports the existing Excel text-cell limit'
+
+$streamBinaryRow = [object[]]::new(2)
+$streamBinaryRow[0] = ''
+$streamBinaryRow[1] = [byte[]]::new(11)
+$boundedReader.Rows = @(, $streamBinaryRow)
+$boundedReader.Index = -1
+[void] $boundedReader.Read()
+$streamBinaryError = $null
+try {
+    $null = Read-SqlUtilityStreamRow -Reader $boundedReader -MaximumTextCharacters 10 -MaximumBinaryBytes 10
+}
+catch {
+    $streamBinaryError = $_.Exception
+}
+Assert-Equal 'System.InvalidOperationException' $streamBinaryError.GetType().FullName `
+    'Streaming export rejects oversized binary before returning the row'
+Assert-True ($streamBinaryError.Message -match 'hexadecimal text') `
+    'Streaming export reports the Excel binary-cell limit'
+$boundedReader.Rows = $originalBoundedRows
 
 $script:streamCall = $null
 $streamEvents = New-Object System.Collections.Generic.List[string]

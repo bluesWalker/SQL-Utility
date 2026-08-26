@@ -9,8 +9,9 @@ $testRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('SqlUtilityConfigTests-
 
 try {
     $defaults = New-SqlUtilityDefaultConfig
-    Assert-Equal 2 $defaults.schemaVersion 'Default schema version'
+    Assert-Equal 3 $defaults.schemaVersion 'Default schema version'
     Assert-Equal 100 $defaults.previewRowLimit 'Default preview limit'
+    Assert-Equal 256 $defaults.resultDataLimitMiB 'Default result data limit'
     Assert-Equal 1000 $defaults.unorderedRowLimit 'Default unordered limit'
     Assert-Equal 120 $defaults.queryExportTimeoutSeconds 'Default timeout'
     Assert-Equal 0 @($defaults.connections).Count 'Default saved connections'
@@ -23,8 +24,9 @@ try {
         connections = @([pscustomobject]@{ server = 'ServerA'; database = 'DbA' })
     }
     $migrated = ConvertTo-SqlUtilityValidatedConfig -InputObject $version1
-    Assert-Equal 2 $migrated.schemaVersion 'Version 1 migrates in memory'
+    Assert-Equal 3 $migrated.schemaVersion 'Version 1 migrates in memory'
     Assert-Equal 100 $migrated.previewRowLimit 'Version 1 receives default preview limit'
+    Assert-Equal 256 $migrated.resultDataLimitMiB 'Version 1 receives default result data limit'
     Assert-Equal 1200 $migrated.unorderedRowLimit 'Migration preserves unordered limit'
     Assert-Equal 100 (ConvertTo-SqlUtilityValidatedConfig -InputObject $version1).previewRowLimit 'Version 1 ignores extra preview limit'
     $version1Path = Join-Path $testRoot 'version1.json'
@@ -32,8 +34,33 @@ try {
     [System.IO.File]::WriteAllText($version1Path, $version1Json, [System.Text.UTF8Encoding]::new($false))
     $version1Bytes = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($version1Path))
     $readVersion1 = Read-SqlUtilityConfig -Path $version1Path
-    Assert-Equal 2 $readVersion1.schemaVersion 'Read migrates version 1 in memory'
+    Assert-Equal 3 $readVersion1.schemaVersion 'Read migrates version 1 in memory'
     Assert-Equal $version1Bytes ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($version1Path))) 'Version 1 read does not rewrite bytes'
+
+    $version2 = [pscustomobject][ordered]@{
+        schemaVersion = 2
+        previewRowLimit = 250
+        unorderedRowLimit = 1400
+        queryExportTimeoutSeconds = 180
+        connections = @()
+    }
+    $migratedVersion2 = ConvertTo-SqlUtilityValidatedConfig -InputObject $version2
+    Assert-Equal 3 $migratedVersion2.schemaVersion 'Version 2 migrates in memory'
+    Assert-Equal 250 $migratedVersion2.previewRowLimit 'Version 2 migration preserves preview limit'
+    Assert-Equal 256 $migratedVersion2.resultDataLimitMiB 'Version 2 receives default result data limit'
+
+    foreach ($validResultDataLimit in @(128, 256, 1024)) {
+        $candidate = New-SqlUtilityDefaultConfig
+        $candidate.resultDataLimitMiB = $validResultDataLimit
+        Assert-Equal $validResultDataLimit (ConvertTo-SqlUtilityValidatedConfig -InputObject $candidate).resultDataLimitMiB `
+            "Accept result data limit $validResultDataLimit"
+    }
+    foreach ($invalidResultDataLimit in @(127, 1025, 128.5, '256')) {
+        $candidate = New-SqlUtilityDefaultConfig
+        $candidate.resultDataLimitMiB = $invalidResultDataLimit
+        Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $candidate } `
+            'System.ArgumentException' "Reject result data limit $invalidResultDataLimit"
+    }
 
     foreach ($validPreviewLimit in @(10, 100, 500)) {
         $candidate = New-SqlUtilityDefaultConfig
@@ -75,7 +102,8 @@ try {
     $reloadedReplacement = Read-SqlUtilityConfig -Path $roundTripPath
     Assert-Equal 1500 $replaced.unorderedRowLimit 'Existing config replacement returns updated settings'
     Assert-Equal 1500 $reloadedReplacement.unorderedRowLimit 'Existing config replacement persists updated settings'
-    Assert-Equal 100 $reloadedReplacement.previewRowLimit 'Write round-trip emits schema 2 preview limit'
+    Assert-Equal 100 $reloadedReplacement.previewRowLimit 'Write round-trip emits schema 3 preview limit'
+    Assert-Equal 256 $reloadedReplacement.resultDataLimitMiB 'Write round-trip emits schema 3 result data limit'
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.tmp' -File).Count 'Successful replacement leaves no temporary sibling'
     Assert-Equal 0 @(Get-ChildItem -LiteralPath $testRoot -Filter '.SqlUtility.config.*.bak' -File).Count 'Successful replacement leaves no backup sibling'
 
@@ -210,15 +238,18 @@ try {
     Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $missingPreviewConfig } 'System.ArgumentException' 'Schema 2 missing preview limit is corruption'
 
     $futureSchemaConfig = New-SqlUtilityDefaultConfig
-    $futureSchemaConfig.schemaVersion = 3
+    $futureSchemaConfig.schemaVersion = 4
     Assert-Throws { ConvertTo-SqlUtilityValidatedConfig -InputObject $futureSchemaConfig } 'System.NotSupportedException' 'Reject unsupported schema version'
 
     $previewConfig = New-SqlUtilityDefaultConfig
     $previewConfig.previewRowLimit = 250
+    $previewConfig.resultDataLimitMiB = 512
     $previewWithPair = Add-SqlUtilitySavedConnection -Config $previewConfig -Server 'ServerA' -Database 'DbA'
     Assert-Equal 250 $previewWithPair.previewRowLimit 'Add preserves preview limit'
+    Assert-Equal 512 $previewWithPair.resultDataLimitMiB 'Add preserves result data limit'
     $previewRemoved = Remove-SqlUtilitySavedConnection -Config $previewWithPair -Server 'ServerA' -Database 'DbA'
     Assert-Equal 250 $previewRemoved.previewRowLimit 'Remove preserves preview limit'
+    Assert-Equal 512 $previewRemoved.resultDataLimitMiB 'Remove preserves result data limit'
 
     $malformedPath = Join-Path $testRoot 'malformed.json'
     [System.IO.File]::WriteAllText($malformedPath, '{ malformed json')

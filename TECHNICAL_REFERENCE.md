@@ -69,7 +69,9 @@ The launcher starts `powershell.exe` with:
 -NoLogo -NoProfile -STA -ExecutionPolicy Bypass
 ```
 
-The execution-policy override is process-only. It does not change the machine, user, registry, or environment configuration. The launcher resolves `SqlUtility.ps1` beside itself even when it is started from another working directory and requests catalog verification before any production module is loaded. A missing catalog, missing protected file, or hash mismatch produces an integrity-check error and exit code `2`.
+The first PowerShell session hides the console shared with `StartSqlUtility.cmd`, then starts `SqlUtility.ps1` in a second PowerShell 5.1 session with the same portable flags and waits for it to exit. A command window may therefore appear briefly during startup, but it does not remain visible while the application is open.
+
+The execution-policy override is process-only. It does not change the machine, user, registry, or environment configuration. The launcher resolves `SqlUtility.ps1` beside itself even when it is started from another working directory, requests catalog verification before any production module is loaded, and returns the application's exit code. A missing catalog, missing protected file, or hash mismatch produces an integrity-check error and exit code `2`.
 
 ## Building a Distribution Package
 

@@ -137,12 +137,33 @@ try {
         @'
 param([switch] $VerifyCatalog)
 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class SqlUtilityLauncherConsoleWindow
+{
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowVisible(IntPtr windowHandle);
+}
+"@
+$consoleWindowHandle = [SqlUtilityLauncherConsoleWindow]::GetConsoleWindow()
 $observation = [ordered]@{
     ApartmentState = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
     ExecutionPolicy = (Get-ExecutionPolicy -Scope Process).ToString()
     ScriptRoot = $PSScriptRoot
     CurrentDirectory = (Get-Location).ProviderPath
     VerifyCatalog = [bool] $VerifyCatalog
+    ConsoleWindowVisible = if ($consoleWindowHandle -eq [IntPtr]::Zero) {
+        $false
+    }
+    else {
+        [SqlUtilityLauncherConsoleWindow]::IsWindowVisible($consoleWindowHandle)
+    }
 }
 $observation | ConvertTo-Json -Compress |
     Set-Content -LiteralPath (Join-Path $PSScriptRoot 'launcher-observation.json') -Encoding UTF8
@@ -150,14 +171,11 @@ Set-Content -LiteralPath 'launcher-current-directory.marker' -Value 'caller dire
 exit 37
 '@ | Set-Content -LiteralPath $probePath -Encoding UTF8
 
-        Push-Location $alternateWorkingDirectory
-        try {
-            & $launcherCopy
-            $launcherExitCode = $LASTEXITCODE
-        }
-        finally {
-            Pop-Location
-        }
+        $launcherArguments = '/d /c ""{0}""' -f $launcherCopy
+        $launcherProcess = Start-Process -FilePath $env:ComSpec `
+            -ArgumentList $launcherArguments -WorkingDirectory $alternateWorkingDirectory `
+            -WindowStyle Normal -Wait -PassThru
+        $launcherExitCode = $launcherProcess.ExitCode
 
         Assert-Equal 37 $launcherExitCode 'Launcher returns the SqlUtility.ps1 exit code'
         Assert-True (Test-Path -LiteralPath $observationPath -PathType Leaf) `
@@ -169,6 +187,8 @@ exit 37
                 'Launcher uses a process-only execution-policy override'
             Assert-True $observation.VerifyCatalog `
                 'Launcher requests runtime catalog verification'
+            Assert-Equal $false $observation.ConsoleWindowVisible `
+                'Launcher hides its console window while SQL Utility runs'
             Assert-Equal $launcherFolder $observation.ScriptRoot `
                 'Launcher resolves SqlUtility.ps1 relative to its own location'
             Assert-True (Test-Path -LiteralPath (Join-Path $alternateWorkingDirectory 'launcher-current-directory.marker')) `

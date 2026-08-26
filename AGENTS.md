@@ -56,7 +56,8 @@ Preserve deterministic cleanup of SQL connections, commands, readers, streams, Z
 - Only a successful connection test may add/persist a server/database pair. Pairs are unique case-insensitively.
 - Persistent application state is limited to validated `SqlUtility.config.json` and its same-directory safe-write transients. Export files/transients use only the user-selected destination directory.
 - Configuration safe writes preserve the prior file on pre-commit failure. Only actual parse/schema corruption may offer reset; environmental read failures exit unchanged.
-- Configuration schema version 2 includes `previewRowLimit`, an integer from `10` through `500`, default `100`. Valid schema 1 input migrates in memory without a read-time rewrite; all later config copies and writes preserve the value.
+- Configuration schema version 3 includes `previewRowLimit`, an integer from `10` through `500`, default `100`, and `resultDataLimitMiB`, an integer from `128` through `1024`, default `256`. Valid schema 1/2 input migrates in memory without a read-time rewrite; all later config copies and writes preserve both values.
+- Retained Query pages/caches and Data Explorer previews enforce `resultDataLimitMiB` through sequential text/binary reads. Exceeding it returns no partial result and asks the user to review selected columns and filters. Ordered export remains streaming and preflights Excel text/binary cell limits instead of applying the cumulative retained-result limit.
 - `unorderedRowLimit` is `100` through `2000`, default `1000`.
 - `queryExportTimeoutSeconds` is `5` through `3600`, default `120`. Connection timeout stays fixed at `10` seconds.
 - Display pages remain fixed at `500` rows.

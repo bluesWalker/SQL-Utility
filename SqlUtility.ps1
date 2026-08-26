@@ -178,14 +178,16 @@ function New-SqlUtilityDefaultServices {
             return Test-SqlUtilityQuery -Sql $Sql
         }
         ExecuteOrderedPage = {
-            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds)
+            param($Server, $Database, $Sql, $PageNumber, $TimeoutSeconds, $ResultDataLimitMiB)
             return Invoke-SqlUtilityOrderedPage -Server $Server -Database $Database -Sql $Sql `
-                -PageNumber $PageNumber -CommandTimeoutSeconds $TimeoutSeconds
+                -PageNumber $PageNumber -CommandTimeoutSeconds $TimeoutSeconds `
+                -ResultDataLimitMiB $ResultDataLimitMiB
         }
         ExecuteUnordered = {
-            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds)
+            param($Server, $Database, $Sql, $RowLimit, $TimeoutSeconds, $ResultDataLimitMiB)
             return Invoke-SqlUtilityUnorderedQuery -Server $Server -Database $Database -Sql $Sql `
-                -RowLimit $RowLimit -CommandTimeoutSeconds $TimeoutSeconds
+                -RowLimit $RowLimit -CommandTimeoutSeconds $TimeoutSeconds `
+                -ResultDataLimitMiB $ResultDataLimitMiB
         }
         GetLocalPage = {
             param($CachedData, $PageNumber, $IsComplete, $IsTruncated)
@@ -230,7 +232,7 @@ function New-SqlUtilityDefaultServices {
         ListPhysicalTables = { param($Server,$Database,$TimeoutSeconds) Get-SqlUtilityPhysicalTables -Server $Server -Database $Database -CommandTimeoutSeconds $TimeoutSeconds }
         GetTableColumns = { param($Server,$Database,$ObjectId,$TimeoutSeconds) Get-SqlUtilityTableColumns -Server $Server -Database $Database -TableObjectId $ObjectId -CommandTimeoutSeconds $TimeoutSeconds }
         BuildDataExplorerQuery = { param($Table,$Columns,$SelectedNames,$Filters,$Limit) New-SqlUtilityDataExplorerQuery -Table $Table -Columns $Columns -SelectedColumnNames $SelectedNames -Filters $Filters -PreviewRowLimit $Limit }
-        ExecuteDataPreview = { param($Server,$Database,$Query,$Limit,$TimeoutSeconds) Invoke-SqlUtilityDataPreview -Server $Server -Database $Database -Query $Query -PreviewRowLimit $Limit -CommandTimeoutSeconds $TimeoutSeconds }
+        ExecuteDataPreview = { param($Server,$Database,$Query,$Limit,$TimeoutSeconds,$ResultDataLimitMiB) Invoke-SqlUtilityDataPreview -Server $Server -Database $Database -Query $Query -PreviewRowLimit $Limit -CommandTimeoutSeconds $TimeoutSeconds -ResultDataLimitMiB $ResultDataLimitMiB }
     }
 }
 
@@ -486,9 +488,11 @@ function Invoke-SqlUtilitySaveSettings {
         $unorderedNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'UnorderedLimitNumeric'
         $timeoutNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'QueryExportTimeoutNumeric'
         $previewNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'PreviewLimitNumeric'
+        $resultDataNumeric = Get-SqlUtilityNamedControl -Root $Form -Name 'ResultDataLimitNumeric'
         $candidate = ConvertTo-SqlUtilityValidatedConfig -InputObject ([pscustomobject][ordered]@{
             schemaVersion = $state.Config.schemaVersion
             previewRowLimit = [int] $previewNumeric.Value
+            resultDataLimitMiB = [int] $resultDataNumeric.Value
             unorderedRowLimit = [int] $unorderedNumeric.Value
             queryExportTimeoutSeconds = [int] $timeoutNumeric.Value
             connections = @($state.Config.connections)
@@ -500,6 +504,7 @@ function Invoke-SqlUtilitySaveSettings {
         $unorderedNumeric.Value = $state.Config.unorderedRowLimit
         $timeoutNumeric.Value = $state.Config.queryExportTimeoutSeconds
         $previewNumeric.Value = $state.Config.previewRowLimit
+        $resultDataNumeric.Value = $state.Config.resultDataLimitMiB
         Show-SqlUtilityMessage -State $state -Text 'Settings saved.' -Caption 'Settings' -Icon 'Information'
     }
     catch {
@@ -888,7 +893,7 @@ function Invoke-SqlUtilityLoadDataExplorerTables {
 
 function Invoke-SqlUtilityDataExplorerPreview {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;$out.Items.Clear();Invoke-SqlUtilityDataExplorerOutputCheckChange $Form {foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)}}.GetNewClosure();$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$filters=@(Get-SqlUtilityDataExplorerFilters $Form);$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names $filters $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds;$s.DataExplorerBuilder.SelectedColumnNames=$names;$s.DataExplorerBuilder.Filters=$filters;$candidate=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityDataExplorerPreviewDisplay $Form $candidate} catch {Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
+    $s=$Form.Tag;if($s.IsBusy-or!$s.DataExplorerBuilder.Table){return};$out=Get-SqlUtilityNamedControl $Form 'OutputColumnsList';if(@($s.DataExplorerBuilder.Columns).Count-and$out.CheckedItems.Count-eq 0){Show-SqlUtilityMessage $s 'Select at least one output column.' 'Data Explorer' 'Warning';return};Set-SqlUtilityBusy $Form $true 'Loading preview...';try{if(!@($s.DataExplorerBuilder.Columns).Count){$fn=$s.Services.GetTableColumns;$cols=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.DataExplorerBuilder.Table.ObjectId $s.Config.queryExportTimeoutSeconds);$s.DataExplorerBuilder.Columns=$cols;Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;$out.Items.Clear();Invoke-SqlUtilityDataExplorerOutputCheckChange $Form {foreach($c in $cols|sort Ordinal){[void]$out.Items.Add([pscustomobject]@{Name=$c.Name;Column=$c;DisplayText=(Get-SqlUtilityDataExplorerColumnDisplayText $c)},$true)}}.GetNewClosure();$out.DisplayMember='DisplayText'};$names=@($out.CheckedItems|%{$_.Name});$filters=@(Get-SqlUtilityDataExplorerFilters $Form);$build=$s.Services.BuildDataExplorerQuery;$q=& $build $s.DataExplorerBuilder.Table $s.DataExplorerBuilder.Columns $names $filters $s.Config.previewRowLimit;$exec=$s.Services.ExecuteDataPreview;$data=& $exec $s.ActiveServer $s.ActiveDatabase $q $s.Config.previewRowLimit $s.Config.queryExportTimeoutSeconds $s.Config.resultDataLimitMiB;$s.DataExplorerBuilder.SelectedColumnNames=$names;$s.DataExplorerBuilder.Filters=$filters;$candidate=[pscustomobject][ordered]@{SourceTable=$s.DataExplorerBuilder.Table.DisplayName;Data=$data};Set-SqlUtilityDataExplorerPreviewDisplay $Form $candidate} catch {Show-SqlUtilityMessage $s ("Preview could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
 }
 
 function Set-SqlUtilityDataExplorerPreviewDisplay {
@@ -958,12 +963,13 @@ function Invoke-SqlUtilityQueryAction {
         if ($hasOrderBy) {
             $executeOrderedPage = $state.Services['ExecuteOrderedPage']
             $pageResult = & $executeOrderedPage $state.ActiveServer $state.ActiveDatabase `
-                $normalizedSql 1 $state.Config.queryExportTimeoutSeconds
+                $normalizedSql 1 $state.Config.queryExportTimeoutSeconds $state.Config.resultDataLimitMiB
         }
         else {
             $executeUnordered = $state.Services['ExecuteUnordered']
             $pageResult = & $executeUnordered $state.ActiveServer $state.ActiveDatabase `
-                $normalizedSql $state.Config.unorderedRowLimit $state.Config.queryExportTimeoutSeconds
+                $normalizedSql $state.Config.unorderedRowLimit $state.Config.queryExportTimeoutSeconds `
+                $state.Config.resultDataLimitMiB
         }
 
         $buildCountSql = $state.Services['BuildCountSql']
@@ -1020,7 +1026,8 @@ function Invoke-SqlUtilityPageAction {
         if ([bool] $state.ExecutedQuery.HasOrderBy) {
             $executeOrderedPage = $state.Services['ExecuteOrderedPage']
             $pageResult = & $executeOrderedPage $state.ActiveServer $state.ActiveDatabase `
-                $state.ExecutedQuery.NormalizedSql $targetPage $state.Config.queryExportTimeoutSeconds
+                $state.ExecutedQuery.NormalizedSql $targetPage $state.Config.queryExportTimeoutSeconds `
+                $state.Config.resultDataLimitMiB
         }
         else {
             $getLocalPage = $state.Services['GetLocalPage']
@@ -1640,11 +1647,27 @@ function New-SqlUtilityMainForm {
     $previewLimitLabel=[System.Windows.Forms.Label]::new();$previewLimitLabel.Text='Preview row limit';$previewLimitLabel.AutoSize=$true;$previewLimitLabel.Location='22,106';$settingsTab.Controls.Add($previewLimitLabel)
     $previewLimitNumeric=[System.Windows.Forms.NumericUpDown]::new();$previewLimitNumeric.Name='PreviewLimitNumeric';$previewLimitNumeric.Minimum=10;$previewLimitNumeric.Maximum=500;$previewLimitNumeric.Value=$validatedConfig.previewRowLimit;$previewLimitNumeric.Location='260,102';$previewLimitNumeric.Width=110;$settingsTab.Controls.Add($previewLimitNumeric)
 
+    $resultDataLimitLabel = [System.Windows.Forms.Label]::new()
+    $resultDataLimitLabel.Text = 'Result data limit (MiB)'
+    $resultDataLimitLabel.AutoSize = $true
+    $resultDataLimitLabel.Location = [System.Drawing.Point]::new(22, 148)
+    $settingsTab.Controls.Add($resultDataLimitLabel)
+
+    $resultDataLimitNumeric = [System.Windows.Forms.NumericUpDown]::new()
+    $resultDataLimitNumeric.Name = 'ResultDataLimitNumeric'
+    $resultDataLimitNumeric.Minimum = 128
+    $resultDataLimitNumeric.Maximum = 1024
+    $resultDataLimitNumeric.Increment = 128
+    $resultDataLimitNumeric.Value = $validatedConfig.resultDataLimitMiB
+    $resultDataLimitNumeric.Location = [System.Drawing.Point]::new(260, 144)
+    $resultDataLimitNumeric.Width = 110
+    $settingsTab.Controls.Add($resultDataLimitNumeric)
+
     $settingsHelp = [System.Windows.Forms.Label]::new()
-    $settingsHelp.Text = 'Query/Export timeout (seconds) covers interactive queries and complete Excel export; connection timeout remains fixed and separate.'
+    $settingsHelp.Text = 'Result data limit bounds retained Query results and Data Explorer previews; actual process memory can be higher. Query/Export timeout (seconds) covers interactive queries and complete Excel export; connection timeout remains fixed and separate.'
     $settingsHelp.AutoSize = $false
-    $settingsHelp.Location = [System.Drawing.Point]::new(22, 142)
-    $settingsHelp.Size = [System.Drawing.Size]::new(680, 42)
+    $settingsHelp.Location = [System.Drawing.Point]::new(22, 184)
+    $settingsHelp.Size = [System.Drawing.Size]::new(680, 56)
     $settingsHelp.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
     $settingsTab.Controls.Add($settingsHelp)
 
@@ -1652,7 +1675,7 @@ function New-SqlUtilityMainForm {
     $saveSettingsButton.Name = 'SaveSettingsButton'
     $saveSettingsButton.Text = 'Save Settings'
     $saveSettingsButton.AutoSize = $true
-    $saveSettingsButton.Location = [System.Drawing.Point]::new(22, 198)
+    $saveSettingsButton.Location = [System.Drawing.Point]::new(22, 250)
     $settingsTab.Controls.Add($saveSettingsButton)
 
     $savedConnectionsList.Add_SelectedIndexChanged({

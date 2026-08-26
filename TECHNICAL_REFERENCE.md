@@ -20,7 +20,7 @@ Version 1 is intentionally small and synchronous. It is designed to be copied in
 - Fixed 500-row display pages.
 - Explicit, on-demand exact row counts when a total is not already known from a complete unordered cache.
 - Complete-result `.xlsx` export with a bold, filtered, frozen header row.
-- Configurable preview-row limit, unordered-row limit, and Query/Export timeout.
+- Configurable preview-row limit, unordered-row limit, retained-result data limit, and Query/Export timeout.
 
 ## Requirements and Portability
 
@@ -95,7 +95,7 @@ The destination directory must already exist and the destination ZIP must not. T
 8. **Page results.** Use `<` and `>`. The exact behavior depends on whether the executed query contains a top-level `ORDER BY`.
 9. **Count rows when needed.** **Count** is always explicit; it never runs automatically during execution or paging. It is available only for a current successful result while the application is not busy and the editor is not stale. Complete unordered results already show their exact cached total and disable **Count**. Truncated unordered results show the configured retained limit with `+` until counted, while ordered results omit a total until **Count** succeeds; after counting an ordered or truncated result, **Count** remains available for an explicit refresh.
 10. **Export a complete Query result.** Use **Export** when enabled and choose an `.xlsx` destination. This existing complete-result workflow is unchanged and is separate from bounded **Export Preview**. The destination is never remembered.
-11. **Change global settings.** The Settings tab controls the preview-row limit, maximum unordered rows, and Query/Export timeout. Changes become active only after **Save Settings** succeeds.
+11. **Change global settings.** The Settings tab controls the preview-row limit, maximum unordered rows, retained-result data limit, and Query/Export timeout. Changes become active only after **Save Settings** succeeds.
 12. **Change connection.** **Change Connection** warns that the current SQL and results will be lost. Confirmation clears transient Query and Data Explorer state and returns to the connection stage; saved pairs and global settings remain.
 
 The application does not keep an idle database connection open. Connection tests, Data Explorer catalog/preview actions, query pages, and ordered exports open and deterministically dispose their own SQL resources.
@@ -123,7 +123,7 @@ flowchart LR
 | --- | --- |
 | `SqlUtility.cat` | Generated version-2 Windows file catalog containing SHA-256 hashes and relative paths for the seven protected runtime command/script files. It excludes mutable configuration and export files. |
 | `SqlUtility.ps1` | Validates the runtime catalog when requested by the launcher, then creates WinForms controls, coordinates connection/Data Explorer/query/count/settings/export workflows, owns application, builder, preview-snapshot, and explicit-count state, binds neutral tables, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
-| `modules/SqlUtility.Config.ps1` | Creates schema 2 defaults, migrates valid schema 1 input in memory, validates settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
+| `modules/SqlUtility.Config.ps1` | Creates schema 3 defaults, migrates valid schema 1/2 input in memory, validates settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
 | `modules/SqlUtility.QueryPolicy.ps1` | Validates named sources, approved join chains, normalization, primary-table extraction, and top-level ordering; generates count-source/wrapper SQL. |
 | `modules/SqlUtility.DataExplorer.ps1` | Validates UI-neutral table/column/filter inputs, maps supported SQL types and operators, quotes catalog identifiers, converts typed values, and builds parameterized preview descriptors and safe editable Query SQL. It has no WinForms or database access. |
 | `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, runs fixed physical-table/column catalog queries, executes typed bounded previews, bounded queries, and scalar counts, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |
@@ -141,14 +141,15 @@ The application stores configuration beside `SqlUtility.ps1`:
 SqlUtility.config.json
 ```
 
-Schema version 2:
+Schema version 3:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "unorderedRowLimit": 1000,
   "queryExportTimeoutSeconds": 120,
   "previewRowLimit": 100,
+  "resultDataLimitMiB": 256,
   "connections": [
     {
       "server": "server-name",
@@ -163,10 +164,11 @@ Configuration rules:
 - `unorderedRowLimit`: integer from `100` through `2000`; default `1000`.
 - `queryExportTimeoutSeconds`: integer from `5` through `3600`; default `120` seconds.
 - `previewRowLimit`: integer from `10` through `500`; default `100`.
+- `resultDataLimitMiB`: integer from `128` through `1024`; default `256` MiB.
 - SQL connection timeout: fixed at `10` seconds and separate from Query/Export timeout.
 - Saved server/database combinations are unique case-insensitively while preserving the latest entered casing.
 - A missing file returns unsaved defaults in memory and is not created by reading.
-- A valid legacy schema version 1 file is migrated in memory to schema 2 with `previewRowLimit = 100`; reading alone does not rewrite it. The next successful connection or settings save persists the complete schema 2 object.
+- Valid legacy schema version 1 input receives `previewRowLimit = 100` and `resultDataLimitMiB = 256`; valid schema version 2 input preserves `previewRowLimit` and receives `resultDataLimitMiB = 256`. Both migrate in memory without a read-time rewrite. The next successful connection or settings save persists the complete schema 3 object.
 - Malformed JSON or an invalid schema is classified as configuration corruption and may be reset only after confirmation.
 - An unsupported future schema version, locked file, access failure, invalid path, or other environmental read error is reported and exits without offering a destructive reset.
 
@@ -198,7 +200,7 @@ Checkbox-glyph clicks, a double-click on column text, Space on the highlighted c
 
 Binary, rowversion/timestamp, XML, spatial, hierarchy, `sql_variant`, CLR/user-defined, and legacy large-object columns are output-only. Text, numeric, date/time, bit, and GUID input is converted to a typed value before execution. Preview identifiers come only from returned catalog metadata and are bracket-quoted; the preview limit and filter values use explicitly typed `SqlParameter` descriptors rather than `AddWithValue`. Contains and starts-with treat `%`, `_`, and `[` as literal input by using SQL Server bracket escaping before adding application wildcards.
 
-Preview is deliberately bounded, unordered, unpaged, and uncounted. Both SQL `TOP` and the client reader enforce `previewRowLimit`; there is no sentinel or completeness claim. Large unfiltered tables often return quickly, but absent matches, unindexed or non-sargable filters, wide/large values, server load, and storage behavior can still cause scans or timeouts. The Query/Export timeout applies.
+Preview is deliberately bounded, unordered, unpaged, and uncounted. Both SQL `TOP` and the client reader enforce `previewRowLimit`; there is no sentinel or completeness claim. The client also enforces `resultDataLimitMiB` while reading variable-length text and binary values. Exceeding it cancels the read, returns no partial preview, and preserves the prior successful preview snapshot. Large unfiltered tables often return quickly, but absent matches, unindexed or non-sargable filters, wide/large values, server load, and storage behavior can still cause scans or timeouts. The Query/Export timeout applies.
 
 Builder state and the displayed preview snapshot are independent. Changing the selected table, columns, filters, or preview-row setting does not change or mark the last successful preview stale. A failed metadata, validation, query, rendering, or export action preserves that snapshot. **Export Preview** always exports exactly the displayed snapshot without database work, while **Send to Query** always generates single-table SQL from the current builder. The generated editor SQL omits `TOP`, `ORDER BY`, and paging, and later execution still passes through the unchanged QueryPolicy workflow.
 
@@ -305,6 +307,12 @@ For a query without top-level `ORDER BY`, the application executes the original 
 
 The cap bounds transferred and retained rows, but it cannot prevent SQL Server from performing an expensive scan, aggregation, or sort before returning rows.
 
+### Retained-result data limit
+
+Interactive ordered pages, unordered caches, and Data Explorer previews use `CommandBehavior.SequentialAccess`. Text and binary lengths are checked before materialization, and a conservative allocation budget accounts for retained payload plus the temporary UTF-16 buffer needed to construct strings. If the next value would exceed `resultDataLimitMiB`, the command is cancelled where possible and the operation fails without returning a partial `DataTable`. The user is asked to review selected columns and filters.
+
+This setting is not an exact process-memory ceiling. `DataTable`, WinForms controls, fixed-width values, object metadata, and other application state add overhead beyond the measured text/binary allocation budget.
+
 ## Excel Export
 
 Query-tab **Export** is enabled only for a current successful result that can be exported completely; this existing complete-result behavior is unchanged:
@@ -329,10 +337,11 @@ The dependency-free exporter creates one worksheet named `Results` with:
 Excel limits enforced by version 1:
 
 - Maximum text value: `32,767` UTF-16 code units. Longer source values fail explicitly rather than being silently truncated.
+- Maximum binary value: `16,382` bytes, because its `0x`-prefixed hexadecimal representation must fit the same Excel text-cell limit.
 - Maximum data rows: `1,048,575` plus one header row.
 - One worksheet only; overflow is an error rather than a partial multi-sheet export.
 
-The Query/Export timeout applies to SQL streaming and overall workbook generation. The exporter writes to a unique temporary file beside the selected destination. An existing workbook is replaced only after the new package closes successfully, using a unique non-null sibling backup. Failures preserve the prior destination and clean transient files where possible.
+The Query/Export timeout applies to SQL streaming and overall workbook generation. Ordered export uses sequential reader access and checks text/binary cell lengths before materializing each value; it does not apply the cumulative retained-result limit because rows are streamed rather than cached. The exporter writes to a unique temporary file beside the selected destination. An existing workbook is replaced only after the new package closes successfully, using a unique non-null sibling backup. Failures preserve the prior destination and clean transient files where possible.
 
 Data Explorer **Export Preview** uses the same neutral cached-table exporter and safety rules, but it exports only the exact bounded preview snapshot already displayed. It does not re-run SQL and does not claim a complete table or query result.
 
@@ -357,6 +366,7 @@ Version 1 performs work synchronously to keep the PowerShell implementation smal
 
 - Connection and diagnostic command timeout: fixed `10` seconds.
 - Query/Export timeout: configurable from `5` through `3600` seconds.
+- Retained-result data limit: configurable from `128` through `1024` MiB; default `256` MiB.
 - Query or page failure clears the current result, page, and export state and reports the error.
 - Export failure preserves a previously existing destination until a complete replacement is ready.
 - Configuration writes preserve pre-existing bytes on pre-commit failure.
@@ -370,10 +380,10 @@ Tests are dependency-free PowerShell scripts and do not require a live SQL Serve
 | Test file | Coverage |
 | --- | --- |
 | `tests/Test-Helpers.ps1` | Shared assertions and test completion behavior. |
-| `tests/Test-Config.ps1` | Defaults, schema/ranges, saved pairs, corruption classification, and safe persistence. |
+| `tests/Test-Config.ps1` | Defaults, schema 1/2 migration, schema 3 ranges, saved pairs, corruption classification, and safe persistence. |
 | `tests/Test-QueryPolicy.ps1` | Accepted grammar including JOIN chains, bypass-focused named-source/join rejection, statement boundaries, aliases, comments, and cast syntax. |
 | `tests/Test-DataExplorer.ps1` | Type/operator matrix, typed conversion, identifier/literal safety, parameterized preview descriptors, and QueryPolicy-compatible generated editor SQL. |
-| `tests/Test-Database.ps1` | Integrated connection strings, physical-table/column catalog queries, typed bounded previews, paging, neutral result conversion, limits, timeouts, and disposal boundaries. |
+| `tests/Test-Database.ps1` | Integrated connection strings, physical-table/column catalog queries, sequential large-value reads, retained-result and Excel-cell limits, paging, neutral result conversion, timeouts, cancellation, and disposal boundaries. |
 | `tests/Test-Excel.ps1` | ZIP/XML workbook structure, formatting, data fidelity, limits, overwrite safety, timeout, and cleanup. |
 | `tests/Test-SqlUtilityUi.ps1` | WinForms stages, Data Explorer workflows and snapshot boundaries, state transitions, injected services, paging, export eligibility, settings, and failure paths. |
 | `tests/Test-Launcher.ps1` | Exact eight-file distribution, catalog validation, relative module loading, launcher behavior, Windows PowerShell 5.1 syntax, STA/process policy, external working directory, and mutation boundaries. |
@@ -404,7 +414,8 @@ These are external acceptance checks. Local automated tests do not complete them
 - [ ] Verify automatic/refresh physical-table discovery and metadata visibility under the signed-in identity.
 - [ ] Preview representative large, wide, indexed, and unindexed tables and verify bounded rows, unordered labeling, filters, and timeout behavior.
 - [ ] Send representative SQL types and collations to Query and execute the generated SQL.
-- [ ] Load a schema 1 configuration, then verify schema 2 migration and reload from the application directory/cloud drive after a successful save.
+- [ ] Load representative schema 1 and schema 2 configurations, then verify schema 3 migration and reload from the application directory/cloud drive after a successful save.
+- [ ] Verify the result data limit against representative `nvarchar(max)` and `varbinary(max)` values: no partial result is displayed, and reducing selected columns or filters allows retry.
 - [ ] Run representative complete unordered, truncated unordered, and ordered `INNER JOIN`, `LEFT JOIN`, and mixed chained-join queries.
 - [ ] Verify ordered joined-result paging with a stable unique `ORDER BY`, including a page beyond the first 500 rows and back.
 - [ ] Run an explicit Count for an ordered joined result.

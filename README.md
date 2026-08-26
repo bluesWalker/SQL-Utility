@@ -169,6 +169,7 @@ Settings apply to all connections. Change a value and select **Save Settings**; 
 | --- | ---: | ---: | --- |
 | **Preview row limit** | 10–500 | 100 | Maximum rows returned by each Data Explorer preview |
 | **Maximum unordered rows** | 100–2,000 | 1,000 | Maximum rows retained for a Query result without top-level `ORDER BY` |
+| **Result data limit (MiB)** | 128–1,024 | 256 | Allocation budget for retained Query pages/results and Data Explorer previews |
 | **Query/Export timeout (seconds)** | 5–3,600 | 120 | Time allowed for previews, queries, counts, paging requests, and Excel export |
 
 The 10-second connection timeout is fixed and is not changed by the Query/Export timeout.
@@ -179,6 +180,7 @@ The 10-second connection timeout is fixed and is not changed by the Query/Export
 - Work runs synchronously. The window may temporarily appear unresponsive while SQL Server or Excel export work is in progress.
 - SQL text, results, Data Explorer selections, filters, previews, and export destinations are not saved when the application closes.
 - Only one active connection, Query result, and Data Explorer preview are kept at a time.
+- If a retained Query page/result or Data Explorer preview reaches the configured result data limit, the operation stops without displaying a partial result. Review the selected columns and filters before retrying. Actual process memory can be higher than this limit because the application and Windows controls have their own overhead.
 - Query export produces one Excel worksheet. A single text value longer than Excel's 32,767-character cell limit or a result larger than 1,048,575 data rows stops the export with an error instead of creating a partial workbook.
 
 ## Troubleshooting
@@ -187,4 +189,5 @@ The 10-second connection timeout is fixed and is not changed by the Query/Export
 - **The connection fails:** verify the server or alias, database name, network/Citrix access, and your Windows-account permissions. The application does not support SQL usernames and passwords.
 - **Saved connections or settings disappear:** move the complete application to a folder where you have write access, then test the connection or save the settings again.
 - **A preview, query, count, or export times out:** narrow the data, use indexed filters, add a stable `ORDER BY` where appropriate, or increase the Query/Export timeout in Settings.
+- **A result reaches the data limit:** select fewer columns, exclude large text or binary columns, or add filters. Increase the Result data limit only when the Citrix session has sufficient memory.
 - **Export is disabled:** execute the current editor text again if it changed, or add `ORDER BY` when an unordered result was truncated.

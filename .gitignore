@@ -3,4 +3,6 @@
 /SqlUtility.config.json
 /.SqlUtility.config.*.tmp
 /.SqlUtility.config.*.bak
+/.SqlUtility.catalog.*.cat
+/.SqlUtility.catalog.*.bak
 *.xlsx.*.bak

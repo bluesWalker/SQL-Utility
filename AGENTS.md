@@ -31,13 +31,14 @@ Inspect the relevant production code and tests before proposing a change. Do not
 - Do not add an installer, compiled executable, third-party module, NuGet dependency, Python runtime, `sqlcmd` dependency, Office automation, or administrator requirement.
 - Do not write to the registry or modify user/machine/process environment variables.
 - Preserve Windows integrated authentication only. Never introduce, request, log, serialize, or persist usernames, passwords, tokens, or SQL-authentication credentials.
-- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, and the five required files under `modules/` unless the user explicitly approves a packaging change.
+- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, `SqlUtility.cat`, and the five required files under `modules/` unless the user explicitly approves another packaging change.
 
 ## Architecture Boundaries
 
 Keep each file focused on its established ownership:
 
 - `StartSqlUtility.cmd`: resolve and start the sibling PowerShell application; no business logic.
+- `SqlUtility.cat`: generated version-2 SHA-256 catalog for the seven protected runtime command/script files; exclude mutable configuration and export files.
 - `SqlUtility.ps1`: WinForms construction, application state, workflow orchestration, service boundaries, result binding, paging controls, status, and user messages.
 - `modules/SqlUtility.Config.ps1`: configuration defaults/schema validation, saved-pair operations, JSON reads, and safe app-local writes.
 - `modules/SqlUtility.QueryPolicy.ps1`: SQL tokenization, named-source read-only grammar, approved `INNER JOIN`/`LEFT JOIN` chain validation, normalization, primary-table extraction, and top-level ordering detection.
@@ -94,6 +95,7 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Dat
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Excel.ps1
 powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Test-SqlUtilityUi.ps1
 powershell.exe -NoLogo -NoProfile -STA -ExecutionPolicy Bypass -File .\tests\Test-Launcher.ps1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Packaging.ps1
 ```
 
 Before completion, run the aggregate suite from the repository root:

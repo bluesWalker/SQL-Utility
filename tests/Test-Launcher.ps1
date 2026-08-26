@@ -26,7 +26,7 @@ function Get-TestEnvironmentSnapshot {
     )
 }
 
-$runtimeFiles = @(
+$protectedRuntimeFiles = @(
     'StartSqlUtility.cmd',
     'SqlUtility.ps1',
     'modules\SqlUtility.Config.ps1',
@@ -35,6 +35,7 @@ $runtimeFiles = @(
     'modules\SqlUtility.Database.ps1',
     'modules\SqlUtility.Excel.ps1'
 )
+$runtimeFiles = @($protectedRuntimeFiles + 'SqlUtility.cat')
 foreach ($relativePath in $runtimeFiles) {
     Assert-True (Test-Path -LiteralPath (Join-Path $projectRoot $relativePath) -PathType Leaf) `
         "Production runtime file exists: $relativePath"
@@ -71,6 +72,62 @@ try {
     Assert-True $entryPointValidation.IsValid `
         'SqlUtility.ps1 validates realistic symbol tokens under its strict-mode runtime'
 
+    $catalogCommand = Get-Command Test-SqlUtilityRuntimeCatalog -ErrorAction SilentlyContinue
+    Assert-True ($null -ne $catalogCommand) `
+        'SqlUtility.ps1 exposes runtime catalog validation before application startup'
+    if ($null -ne $catalogCommand) {
+        $sourceCatalogResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $projectRoot
+        Assert-True $sourceCatalogResult.IsValid `
+            'Checked-in runtime files match the checked-in catalog'
+
+        $catalogFolder = Join-Path $temporaryRoot 'Catalog Folder'
+        [void] [System.IO.Directory]::CreateDirectory($catalogFolder)
+        foreach ($relativePath in $protectedRuntimeFiles) {
+            $sourcePath = Join-Path $projectRoot $relativePath
+            $destinationPath = Join-Path $catalogFolder $relativePath
+            $destinationParent = Split-Path -Parent $destinationPath
+            [void] [System.IO.Directory]::CreateDirectory($destinationParent)
+            Copy-Item -LiteralPath $sourcePath -Destination $destinationPath
+        }
+        $catalogRuntimePaths = @(
+            $protectedRuntimeFiles | ForEach-Object { Join-Path $catalogFolder $_ }
+        )
+        $catalogPath = Join-Path $catalogFolder 'SqlUtility.cat'
+        New-FileCatalog -Path $catalogRuntimePaths -CatalogFilePath $catalogPath `
+            -CatalogVersion 2.0 | Out-Null
+
+        $catalogResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $catalogFolder
+        Assert-True $catalogResult.IsValid `
+            'Runtime catalog accepts the unchanged protected files'
+
+        Set-Content -LiteralPath (Join-Path $catalogFolder 'SqlUtility.config.json') `
+            -Value '{}' -Encoding UTF8
+        $catalogWithConfig = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $catalogFolder
+        Assert-True $catalogWithConfig.IsValid `
+            'Runtime catalog ignores mutable application configuration'
+
+        $hiddenCatalogPath = Join-Path $catalogFolder 'SqlUtility.hidden.cat'
+        Move-Item -LiteralPath $catalogPath -Destination $hiddenCatalogPath
+        $missingCatalogResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $catalogFolder
+        Assert-True (-not $missingCatalogResult.IsValid) `
+            'Runtime catalog validation rejects a missing catalog'
+        Move-Item -LiteralPath $hiddenCatalogPath -Destination $catalogPath
+
+        $missingRuntimePath = Join-Path $catalogFolder 'modules\SqlUtility.Excel.ps1'
+        $hiddenRuntimePath = Join-Path $catalogFolder 'modules\SqlUtility.Excel.hidden.ps1'
+        Move-Item -LiteralPath $missingRuntimePath -Destination $hiddenRuntimePath
+        $missingRuntimeResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $catalogFolder
+        Assert-True (-not $missingRuntimeResult.IsValid) `
+            'Runtime catalog validation rejects a missing protected file'
+        Move-Item -LiteralPath $hiddenRuntimePath -Destination $missingRuntimePath
+
+        Add-Content -LiteralPath $missingRuntimePath `
+            -Value '# accidental change' -Encoding UTF8
+        $changedCatalogResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $catalogFolder
+        Assert-True (-not $changedCatalogResult.IsValid) `
+            'Runtime catalog rejects a changed protected file'
+    }
+
     $launcherPath = Join-Path $projectRoot 'StartSqlUtility.cmd'
     if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
         $launcherCopy = Join-Path $launcherFolder 'StartSqlUtility.cmd'
@@ -78,11 +135,14 @@ try {
         $observationPath = Join-Path $launcherFolder 'launcher-observation.json'
         Copy-Item -LiteralPath $launcherPath -Destination $launcherCopy
         @'
+param([switch] $VerifyCatalog)
+
 $observation = [ordered]@{
     ApartmentState = [System.Threading.Thread]::CurrentThread.GetApartmentState().ToString()
     ExecutionPolicy = (Get-ExecutionPolicy -Scope Process).ToString()
     ScriptRoot = $PSScriptRoot
     CurrentDirectory = (Get-Location).ProviderPath
+    VerifyCatalog = [bool] $VerifyCatalog
 }
 $observation | ConvertTo-Json -Compress |
     Set-Content -LiteralPath (Join-Path $PSScriptRoot 'launcher-observation.json') -Encoding UTF8
@@ -107,6 +167,8 @@ exit 37
             Assert-Equal 'STA' $observation.ApartmentState 'Launcher starts Windows PowerShell in STA mode'
             Assert-Equal 'Bypass' $observation.ExecutionPolicy `
                 'Launcher uses a process-only execution-policy override'
+            Assert-True $observation.VerifyCatalog `
+                'Launcher requests runtime catalog verification'
             Assert-Equal $launcherFolder $observation.ScriptRoot `
                 'Launcher resolves SqlUtility.ps1 relative to its own location'
             Assert-True (Test-Path -LiteralPath (Join-Path $alternateWorkingDirectory 'launcher-current-directory.marker')) `
@@ -118,7 +180,7 @@ exit 37
 
     $forbiddenMutationPattern = '(?im)\b(?:Set-ItemProperty|New-ItemProperty|Remove-ItemProperty|SetEnvironmentVariable|setx(?:\.exe)?|reg\.exe)\b'
     $forbiddenImportPattern = '(?im)^\s*(?:Import-Module\b|using\s+module\b|#requires\s+-modules?\b)'
-    foreach ($relativePath in $runtimeFiles) {
+    foreach ($relativePath in $protectedRuntimeFiles) {
         $fullPath = Join-Path $projectRoot $relativePath
         if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
         $source = Get-Content -LiteralPath $fullPath -Raw

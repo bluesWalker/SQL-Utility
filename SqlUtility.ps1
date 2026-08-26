@@ -1,6 +1,7 @@
 param(
     [switch] $NoGui,
-    [string] $ConfigPath
+    [string] $ConfigPath,
+    [switch] $VerifyCatalog
 )
 
 Set-StrictMode -Version 2.0
@@ -9,6 +10,93 @@ $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Data
+
+function Test-SqlUtilityRuntimeCatalog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $ApplicationRoot
+    )
+
+    $rootPath = [System.IO.Path]::GetFullPath($ApplicationRoot)
+    $catalogPath = Join-Path $rootPath 'SqlUtility.cat'
+    if (-not (Test-Path -LiteralPath $catalogPath -PathType Leaf)) {
+        return [pscustomobject]@{
+            IsValid = $false
+            Message = 'SqlUtility.cat is missing.'
+        }
+    }
+
+    $relativeRuntimePaths = @(
+        'StartSqlUtility.cmd',
+        'SqlUtility.ps1',
+        'modules\SqlUtility.Config.ps1',
+        'modules\SqlUtility.QueryPolicy.ps1',
+        'modules\SqlUtility.DataExplorer.ps1',
+        'modules\SqlUtility.Database.ps1',
+        'modules\SqlUtility.Excel.ps1'
+    )
+    $runtimePaths = @(
+        $relativeRuntimePaths | ForEach-Object { Join-Path $rootPath $_ }
+    )
+    $missingPath = $runtimePaths |
+        Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) } |
+        Select-Object -First 1
+    if ($null -ne $missingPath) {
+        return [pscustomobject]@{
+            IsValid = $false
+            Message = ('A protected runtime file is missing: {0}' -f
+                [System.IO.Path]::GetFileName([string] $missingPath))
+        }
+    }
+
+    try {
+        $status = Test-FileCatalog -CatalogFilePath $catalogPath -Path $runtimePaths `
+            -ErrorAction Stop
+    }
+    catch {
+        return [pscustomobject]@{
+            IsValid = $false
+            Message = ('The runtime catalog could not be checked: {0}' -f $_.Exception.Message)
+        }
+    }
+
+    if ([string] $status -ne 'Valid') {
+        return [pscustomobject]@{
+            IsValid = $false
+            Message = 'One or more protected runtime files do not match SqlUtility.cat.'
+        }
+    }
+
+    return [pscustomobject]@{
+        IsValid = $true
+        Message = ''
+    }
+}
+
+if ($VerifyCatalog) {
+    $catalogResult = Test-SqlUtilityRuntimeCatalog -ApplicationRoot $PSScriptRoot
+    if (-not $catalogResult.IsValid) {
+        $catalogMessage = @(
+            'SQL Utility cannot start because its application files are incomplete or have changed.'
+            ''
+            [string] $catalogResult.Message
+            ''
+            'Extract a fresh copy of the original SQL Utility package and try again.'
+        ) -join "`r`n"
+        if ($NoGui) {
+            [System.Console]::Error.WriteLine($catalogMessage)
+        }
+        else {
+            [void] [System.Windows.Forms.MessageBox]::Show(
+                $catalogMessage,
+                'SQL Utility Integrity Check',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error
+            )
+        }
+        exit 2
+    }
+}
 
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.Config.ps1')
 . (Join-Path $PSScriptRoot 'modules\SqlUtility.QueryPolicy.ps1')

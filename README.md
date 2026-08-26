@@ -17,11 +17,12 @@ Purpose of developing this tool is to provide some convenience for frequent day-
 SQL Utility does not use an installer and does not require administrator access.
 
 1. Copy or extract the complete application folder to a Windows location that you can access. Do not run the application from inside a ZIP file.
-2. Keep these seven runtime files together in the same structure:
+2. Keep these eight runtime files together in the same structure:
 
    ```text
    StartSqlUtility.cmd
    SqlUtility.ps1
+   SqlUtility.cat
    modules/
      SqlUtility.Config.ps1
      SqlUtility.QueryPolicy.ps1
@@ -31,6 +32,8 @@ SQL Utility does not use an installer and does not require administrator access.
    ```
 
 3. Double-click `StartSqlUtility.cmd`.
+
+Before opening the application, the launcher checks the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`. If a protected file is missing or changed, SQL Utility refuses to start and asks you to extract a fresh copy of the original package. `SqlUtility.config.json` and its temporary files are not part of this check because they contain normal saved settings.
 
 Windows PowerShell 5.1 is required. Microsoft Excel is not required to run the application or create an `.xlsx` file, but Excel or another compatible spreadsheet application is needed to open the exported file.
 
@@ -178,7 +181,7 @@ The 10-second connection timeout is fixed and is not changed by the Query/Export
 
 ## Troubleshooting
 
-- **The application does not start:** confirm that all seven runtime files are present in the required structure and start it with `StartSqlUtility.cmd` on Windows PowerShell 5.1.
+- **The application does not start:** confirm that all eight runtime files are present in the required structure and start it with `StartSqlUtility.cmd` on Windows PowerShell 5.1. If an integrity-check message appears, extract a fresh copy of the original package instead of editing the distributed files.
 - **The connection fails:** verify the server or alias, database name, network/Citrix access, and your Windows-account permissions. The application does not support SQL usernames and passwords.
 - **Saved connections or settings disappear:** move the complete application to a folder where you have write access, then test the connection or save the settings again.
 - **A preview, query, count, or export times out:** narrow the data, use indexed filters, add a stable `ORDER BY` where appropriate, or increase the Query/Export timeout in Settings.

@@ -33,6 +33,8 @@ SQL Utility does not use an installer and does not require administrator access.
 
 3. Double-click `StartSqlUtility.cmd`.
 
+The launcher may show a command window briefly during startup, then hides it while SQL Utility remains open.
+
 Before opening the application, the launcher checks the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`. If a protected file is missing or changed, SQL Utility refuses to start and asks you to extract a fresh copy of the original package. `SqlUtility.config.json` and its temporary files are not part of this check because they contain normal saved settings.
 
 Windows PowerShell 5.1 is required. Microsoft Excel is not required to run the application or create an `.xlsx` file, but Excel or another compatible spreadsheet application is needed to open the exported file.

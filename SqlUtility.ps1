@@ -1602,7 +1602,7 @@ function New-SqlUtilityMainForm {
         $setSplitterDistance={param($split,$target,$available)$maximum=[Math]::Max($split.Panel1MinSize,$available-$split.Panel2MinSize-$split.SplitterWidth);[void]($split.SplitterDistance=[Math]::Max($split.Panel1MinSize,[Math]::Min($target,$maximum)))}
         $null=& $setSplitterDistance $dataExplorerMainSplit 230 $dataExplorerMainSplit.ClientSize.Width
         $null=& $setSplitterDistance $dataExplorerBuilderSplit 200 $dataExplorerBuilderSplit.ClientSize.Width
-        $null=& $setSplitterDistance $dataExplorerRightSplit ([Math]::Floor($dataExplorerRightSplit.ClientSize.Height/2)) $dataExplorerRightSplit.ClientSize.Height
+        $null=& $setSplitterDistance $dataExplorerRightSplit 205 $dataExplorerRightSplit.ClientSize.Height
     }.GetNewClosure()
     $dataExplorerTab.Add_Layout($initializeDataExplorerSplitters)
 

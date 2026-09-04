@@ -1814,6 +1814,11 @@ try {
         'Builder is above Preview'
     Assert-Equal 10 $rightSplit.SplitterWidth `
         'Builder and Preview use a 10-pixel remote-friendly splitter'
+    $querySplit = Get-TestControl $explorerForm 'QuerySplitContainer'
+    Assert-Equal $querySplit.Panel1.Height $rightSplit.Panel1.Height `
+        'Data Explorer builder pane matches the Query editor pane by default'
+    Assert-Equal $querySplit.Panel2.Height $rightSplit.Panel2.Height `
+        'Data Explorer preview pane matches the Query output pane by default'
     Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $builderSplit.Orientation `
         'Columns are left of filters'
     Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $mainSplit.FixedPanel `

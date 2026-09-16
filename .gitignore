@@ -1,6 +1,9 @@
 /.superpowers/
 /.worktrees/
 /SqlUtility.config.json
+/Templates/
+/.SqlUtility.template.*.tmp
+/.SqlUtility.template.*.bak
 /.SqlUtility.config.*.tmp
 /.SqlUtility.config.*.bak
 /.SqlUtility.catalog.*.cat

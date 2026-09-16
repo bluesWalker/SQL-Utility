@@ -1,5 +1,5 @@
 $tests = @(
-    'Test-Config.ps1', 'Test-QueryPolicy.ps1', 'Test-DataExplorer.ps1', 'Test-Database.ps1',
+    'Test-Config.ps1', 'Test-Templates.ps1', 'Test-QueryPolicy.ps1', 'Test-DataExplorer.ps1', 'Test-Database.ps1',
     'Test-Excel.ps1', 'Test-SqlUtilityUi.ps1', 'Test-Launcher.ps1', 'Test-Packaging.ps1'
 )
 foreach ($test in $tests) {

@@ -1,3 +1,110 @@
+function Initialize-SqlUtilityTemplateDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    [void] [System.IO.Directory]::CreateDirectory($Path)
+}
+
+function Get-SqlUtilityTemplatePath {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ([System.IO.Path]::GetExtension($fullPath) -ine '.sql') {
+        throw [System.ArgumentException]::new('Select a template file with the .sql extension.')
+    }
+    return $fullPath
+}
+
+function Read-SqlUtilityTemplate {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $fullPath = Get-SqlUtilityTemplatePath -Path $Path
+    $bytes = [System.IO.File]::ReadAllBytes($fullPath)
+    $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    $offset = 0
+    # Decode explicitly so BOM detection also retains strict error handling.
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0xff -and $bytes[1] -eq 0xfe -and $bytes[2] -eq 0 -and $bytes[3] -eq 0) {
+        $encoding = [System.Text.UTF32Encoding]::new($false, $false, $true); $offset = 4
+    }
+    elseif ($bytes.Length -ge 4 -and $bytes[0] -eq 0 -and $bytes[1] -eq 0 -and $bytes[2] -eq 0xfe -and $bytes[3] -eq 0xff) {
+        $encoding = [System.Text.UTF32Encoding]::new($true, $false, $true); $offset = 4
+    }
+    elseif ($bytes.Length -ge 3 -and $bytes[0] -eq 0xef -and $bytes[1] -eq 0xbb -and $bytes[2] -eq 0xbf) {
+        $offset = 3
+    }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xff -and $bytes[1] -eq 0xfe) {
+        $encoding = [System.Text.UnicodeEncoding]::new($false, $false, $true); $offset = 2
+    }
+    elseif ($bytes.Length -ge 2 -and $bytes[0] -eq 0xfe -and $bytes[1] -eq 0xff) {
+        $encoding = [System.Text.UnicodeEncoding]::new($true, $false, $true); $offset = 2
+    }
+    $text = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
+    if ($text.IndexOf([char] 0) -ge 0) {
+        throw [System.IO.InvalidDataException]::new('The template contains a NUL character and cannot be loaded into the editor.')
+    }
+    return $text
+}
+
+function Remove-SqlUtilityTemplateTransientFile {
+    param([Parameter(Mandatory = $true)][string] $Path)
+    [System.IO.File]::Delete($Path)
+}
+
+function Write-SqlUtilityTemplate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string] $Path,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string] $Text,
+        [bool] $AllowOverwrite = $false
+    )
+
+    $fullPath = Get-SqlUtilityTemplatePath -Path $Path
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text.IndexOf([char] 0) -ge 0) {
+        throw [System.ArgumentException]::new('Enter template text without NUL characters before saving.')
+    }
+    $directory = [System.IO.Path]::GetDirectoryName($fullPath)
+    if (-not [System.IO.Directory]::Exists($directory)) {
+        throw [System.IO.DirectoryNotFoundException]::new("Template directory does not exist: $directory")
+    }
+    $destinationExists = [System.IO.File]::Exists($fullPath)
+    if ($destinationExists -and -not $AllowOverwrite) {
+        throw [System.IO.IOException]::new('The template already exists. Save again and confirm replacement.')
+    }
+    $temporaryPath = Join-Path $directory ('.SqlUtility.template.{0}.tmp' -f [guid]::NewGuid().ToString('N'))
+    $backupPath = Join-Path $directory ('.SqlUtility.template.{0}.bak' -f [guid]::NewGuid().ToString('N'))
+    $committed = $false
+    $primaryError = $null
+    $cleanupWarning = ''
+    try {
+        [System.IO.File]::WriteAllText($temporaryPath, $Text, [System.Text.UTF8Encoding]::new($true, $true))
+        if ($destinationExists) {
+            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath)
+        }
+        else {
+            # Move does not overwrite a file that appeared after the existence check.
+            [System.IO.File]::Move($temporaryPath, $fullPath)
+        }
+        $committed = $true
+    }
+    catch { $primaryError = $_ }
+    finally {
+        $cleanupPaths = @($temporaryPath)
+        if ($committed) { $cleanupPaths += $backupPath }
+        foreach ($cleanupPath in $cleanupPaths) {
+            if ([System.IO.File]::Exists($cleanupPath)) {
+                try { Remove-SqlUtilityTemplateTransientFile -Path $cleanupPath }
+                catch {
+                    $cleanupWarning = "The template was saved, but a temporary or backup file could not be removed: $cleanupPath`r`n$($_.Exception.Message)"
+                }
+            }
+        }
+    }
+    if ($null -ne $primaryError) { $PSCmdlet.ThrowTerminatingError($primaryError) }
+    return [pscustomobject]@{ Path = $fullPath; CleanupWarning = $cleanupWarning }
+}
+
 function Get-SqlUtilityConfigPropertyValue {
     [CmdletBinding()]
     param(

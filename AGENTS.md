@@ -31,7 +31,7 @@ Inspect the relevant production code and tests before proposing a change. Do not
 - Do not add an installer, compiled executable, third-party module, NuGet dependency, Python runtime, `sqlcmd` dependency, Office automation, or administrator requirement.
 - Do not write to the registry or modify user/machine/process environment variables.
 - Preserve Windows integrated authentication only. Never introduce, request, log, serialize, or persist usernames, passwords, tokens, or SQL-authentication credentials.
-- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, `SqlUtility.cat`, and the five required files under `modules/` unless the user explicitly approves another packaging change.
+- Keep the runtime distribution to `StartSqlUtility.cmd`, `SqlUtility.ps1`, `SqlUtility.cat`, the five required files under `modules/`, and an initially empty `Templates/` directory unless the user explicitly approves another packaging change. Never package personal templates.
 
 ## Architecture Boundaries
 
@@ -40,7 +40,7 @@ Keep each file focused on its established ownership:
 - `StartSqlUtility.cmd`: resolve and start the sibling PowerShell application; no business logic.
 - `SqlUtility.cat`: generated version-2 SHA-256 catalog for the seven protected runtime command/script files; exclude mutable configuration and export files.
 - `SqlUtility.ps1`: WinForms construction, application state, workflow orchestration, service boundaries, result binding, paging controls, status, and user messages.
-- `modules/SqlUtility.Config.ps1`: configuration defaults/schema validation, saved-pair operations, JSON reads, and safe app-local writes.
+- `modules/SqlUtility.Config.ps1`: configuration defaults/schema validation, saved-pair operations, JSON reads, safe app-local writes, template-folder creation, and UI-neutral SQL template text reads/safe writes.
 - `modules/SqlUtility.QueryPolicy.ps1`: SQL tokenization, named-source read-only grammar, approved `INNER JOIN`/`LEFT JOIN` chain validation, normalization, primary-table extraction, and top-level ordering detection.
 - `modules/SqlUtility.DataExplorer.ps1`: UI-neutral table/column/filter validation, type/operator rules, catalog-derived identifier quoting, typed conversion, parameterized preview descriptors, and safe Query-editor SQL generation.
 - `modules/SqlUtility.Database.ps1`: connection strings, SQL connections/commands/readers, diagnostic tests, fixed physical-table/column catalog queries, typed bounded previews, paging, neutral result conversion, ordered streaming, timeouts, cancellation where possible, and deterministic disposal.
@@ -54,7 +54,8 @@ Preserve deterministic cleanup of SQL connections, commands, readers, streams, Z
 
 - Server and Database fields start blank on every launch, even when saved pairs exist.
 - Only a successful connection test may add/persist a server/database pair. Pairs are unique case-insensitively.
-- Persistent application state is limited to validated `SqlUtility.config.json` and its same-directory safe-write transients. Export files/transients use only the user-selected destination directory.
+- Persistent application state is limited to validated `SqlUtility.config.json`, explicit `.sql` template saves, and same-directory safe-write transients. Template and export files/transients use only the user-selected destination directory. The application creates its `Templates/` directory if missing, preserving existing contents.
+- Template Save/Load dialogs always start in the application-local `Templates/` directory and allow browsing elsewhere. Loading confirms before replacing nonblank editor text and never changes the connection, updates metadata, or executes SQL. Template files have no automatic synchronization with editor/database changes. Follow the [SQL Template Files design](docs/superpowers/specs/2026-09-16-sql-templates-design.md).
 - Configuration safe writes preserve the prior file on pre-commit failure. Only actual parse/schema corruption may offer reset; environmental read failures exit unchanged.
 - Configuration schema version 3 includes `previewRowLimit`, an integer from `10` through `500`, default `100`, and `resultDataLimitMiB`, an integer from `128` through `1024`, default `256`. Valid schema 1/2 input migrates in memory without a read-time rewrite; all later config copies and writes preserve both values.
 - Retained Query pages/caches and Data Explorer previews enforce `resultDataLimitMiB` through sequential text/binary reads. Exceeding it returns no partial result and asks the user to review selected columns and filters. Ordered export remains streaming and preflights Excel text/binary cell limits instead of applying the cumulative retained-result limit.
@@ -90,6 +91,7 @@ Run the focused test that owns the changed contract during development, for exam
 
 ```powershell
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Config.ps1
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Templates.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-QueryPolicy.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-DataExplorer.ps1
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Database.ps1

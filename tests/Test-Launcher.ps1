@@ -230,6 +230,11 @@ exit 37
         BuildDataExplorerQuery = { throw 'Unexpected BuildDataExplorerQuery call during form construction.' }
         ExecuteDataPreview = { throw 'Unexpected ExecuteDataPreview call during form construction.' }
         ExportPreview = { throw 'Unexpected ExportPreview call during form construction.' }
+        InitializeTemplateDirectory = { }
+        PromptSaveTemplatePath = { throw 'Unexpected template save dialog during form construction.' }
+        PromptLoadTemplatePath = { throw 'Unexpected template load dialog during form construction.' }
+        ReadTemplate = { throw 'Unexpected template read during form construction.' }
+        WriteTemplate = { throw 'Unexpected template write during form construction.' }
     }
     $form = New-SqlUtilityMainForm -Config (New-SqlUtilityDefaultConfig) `
         -ConfigPath (Join-Path $projectRoot 'SqlUtility.config.json') -Services $services

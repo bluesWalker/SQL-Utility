@@ -23,6 +23,7 @@ SQL Utility does not use an installer and does not require administrator access.
    StartSqlUtility.cmd
    SqlUtility.ps1
    SqlUtility.cat
+   Templates/  (initially empty)
    modules/
      SqlUtility.Config.ps1
      SqlUtility.QueryPolicy.ps1
@@ -35,7 +36,7 @@ SQL Utility does not use an installer and does not require administrator access.
 
 The launcher may show a command window briefly during startup, then hides it while SQL Utility remains open.
 
-Before opening the application, the launcher checks the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`. If a protected file is missing or changed, SQL Utility refuses to start and asks you to extract a fresh copy of the original package. `SqlUtility.config.json` and its temporary files are not part of this check because they contain normal saved settings.
+Before opening the application, the launcher checks the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`. If a protected file is missing or changed, SQL Utility refuses to start and asks you to extract a fresh copy of the original package. Saved settings and template files are not part of this check because they contain normal user data.
 
 Windows PowerShell 5.1 is required. Microsoft Excel is not required to run the application or create an `.xlsx` file, but Excel or another compatible spreadsheet application is needed to open the exported file.
 
@@ -80,6 +81,18 @@ ORDER BY c.CustomerId, o.OrderDate;
 The Query tab rejects data-changing statements and unsupported shapes, including additional statements, subqueries, CTEs, `RIGHT JOIN`, `FULL JOIN`, `CROSS JOIN`, `APPLY`, comma joins, table functions, temporary tables, and cross-database or linked-server sources. This validation helps prevent accidental changes; your SQL Server permissions remain the authoritative access control.
 
 If you edit the SQL after a successful execution, the displayed result becomes stale. Paging, counting, and export are unavailable until you select **Execute** again.
+
+### Save and load templates
+
+Use the buttons above the Query editor to reuse SQL as individual `.sql` files:
+
+- **Save Template...** saves the current editor text, including values, comments, and any placeholders you have entered. Choose a filename; replacing an existing file requires confirmation. Save is disabled when the editor is blank.
+- **Load Template...** opens a file and copies its text into the editor. Replacing nonblank editor text requires confirmation. Loading does not execute SQL or change the active connection. Changed text makes existing results stale, just like editing manually.
+- Both dialogs always start in the `Templates` folder beside the application. You can browse to another folder for either action; the next dialog starts in `Templates` again.
+
+The application starts with an empty `Templates` folder and creates it if missing. Existing templates are preserved. Keep this folder when moving or upgrading the application. If the application folder cannot be written, you can choose another accessible folder in the dialogs.
+
+Templates are editable starting points. Changes to the database or editor never update a saved file automatically. Edit variable inputs or placeholders yourself, then select **Execute** to run through the usual query checks. To save a Data Explorer query, use **Send to Query** first. Files are saved as UTF-8; loading also supports BOM-marked Unicode files.
 
 ### Page through results
 
@@ -178,7 +191,7 @@ The 10-second connection timeout is fixed and is not changed by the Query/Export
 
 - SQL Utility is read-only, but queries can still be expensive. Filters, joins, sorting, grouping, and counting may scan or process large amounts of data before the row limit is applied.
 - Work runs synchronously. The window may temporarily appear unresponsive while SQL Server or Excel export work is in progress.
-- SQL text, results, Data Explorer selections, filters, previews, and export destinations are not saved when the application closes.
+- Closing the application does not automatically save editor text, results, Data Explorer selections, filters, previews, or file destinations. Only SQL explicitly saved with **Save Template...** remains in a template file.
 - Only one active connection, Query result, and Data Explorer preview are kept at a time.
 - If a retained Query page/result or Data Explorer preview reaches the configured result data limit, the operation stops without displaying a partial result. Review the selected columns and filters before retrying. Actual process memory can be higher than this limit because the application and Windows controls have their own overhead.
 - Query export produces one Excel worksheet. A single text value longer than Excel's 32,767-character cell limit or a result larger than 1,048,575 data rows stops the export with an error instead of creating a partial workbook.

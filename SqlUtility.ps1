@@ -132,11 +132,63 @@ function Invoke-SqlUtilityExportWorkflow {
         -TimeoutSeconds $State.Config.queryExportTimeoutSeconds
 }
 
+function New-SqlUtilityTemplateFileDialog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('Save', 'Load')][string] $Mode,
+        [Parameter(Mandatory = $true)][string] $InitialDirectory
+    )
+
+    if ($Mode -eq 'Save') {
+        $dialog = [System.Windows.Forms.SaveFileDialog]::new()
+        # The workflow confirms once and passes that decision to the safe writer.
+        $dialog.OverwritePrompt = $false
+    }
+    else {
+        $dialog = [System.Windows.Forms.OpenFileDialog]::new()
+        $dialog.Multiselect = $false
+        $dialog.CheckFileExists = $true
+    }
+    $dialog.Title = "$Mode Template"
+    $dialog.Filter = 'SQL template (*.sql)|*.sql'
+    $dialog.DefaultExt = 'sql'
+    $dialog.AddExtension = $true
+    $dialog.CheckPathExists = $true
+    $dialog.RestoreDirectory = $true
+    $dialog.InitialDirectory = $InitialDirectory
+    $dialog.FileName = ''
+    return $dialog
+}
+
 function New-SqlUtilityDefaultServices {
     [CmdletBinding()]
     param()
 
     return @{
+        InitializeTemplateDirectory = {
+            param($Path)
+            Initialize-SqlUtilityTemplateDirectory -Path $Path
+        }
+        PromptSaveTemplatePath = {
+            param($Directory)
+            $dialog = New-SqlUtilityTemplateFileDialog -Mode Save -InitialDirectory $Directory
+            try {
+                if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return [string] $dialog.FileName }
+                return $null
+            }
+            finally { $dialog.Dispose() }
+        }
+        PromptLoadTemplatePath = {
+            param($Directory)
+            $dialog = New-SqlUtilityTemplateFileDialog -Mode Load -InitialDirectory $Directory
+            try {
+                if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return [string] $dialog.FileName }
+                return $null
+            }
+            finally { $dialog.Dispose() }
+        }
+        ReadTemplate = { param($Path) Read-SqlUtilityTemplate -Path $Path }
+        WriteTemplate = { param($Path,$Text,$AllowOverwrite) Write-SqlUtilityTemplate -Path $Path -Text $Text -AllowOverwrite $AllowOverwrite }
         TestConnection = {
             param($Server, $Database)
             Invoke-SqlUtilityConnectionTest -Server $Server -Database $Database
@@ -246,7 +298,9 @@ function Assert-SqlUtilityServices {
         'TestConnection', 'WriteConfig', 'ShowMessage', 'Confirm', 'ValidateQuery',
         'ExecuteOrderedPage', 'ExecuteUnordered', 'GetLocalPage', 'BuildCountSql', 'ExecuteCount',
         'ExportResult', 'PromptSavePath', 'ListPhysicalTables', 'GetTableColumns',
-        'BuildDataExplorerQuery', 'ExecuteDataPreview', 'ExportPreview'
+        'BuildDataExplorerQuery', 'ExecuteDataPreview', 'ExportPreview',
+        'InitializeTemplateDirectory', 'PromptSaveTemplatePath', 'PromptLoadTemplatePath',
+        'ReadTemplate', 'WriteTemplate'
     )) {
         if (-not $Services.ContainsKey($serviceName) -or $Services[$serviceName] -isnot [scriptblock]) {
             throw [System.ArgumentException]::new("Services must contain a '$serviceName' scriptblock.")
@@ -291,6 +345,77 @@ function Get-SqlUtilityNamedControl {
         return $null
     }
     return $matches[0]
+}
+
+function Initialize-SqlUtilityTemplatesForForm {
+    param([Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form)
+
+    $state = $Form.Tag
+    try {
+        $initialize = $state.Services['InitializeTemplateDirectory']
+        & $initialize $state.TemplateDirectory
+    }
+    catch {
+        Show-SqlUtilityMessage -State $state -Caption 'Templates Folder' -Icon 'Warning' `
+            -Text ("The default Templates folder could not be prepared. You can browse to another folder when saving or loading.`r`n`r`n{0}" -f $_.Exception.Message)
+    }
+}
+
+function Invoke-SqlUtilityTemplateAction {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][System.Windows.Forms.Form] $Form,
+        [Parameter(Mandatory = $true)][ValidateSet('Save', 'Load')][string] $Mode
+    )
+
+    $state = $Form.Tag
+    $editor = Get-SqlUtilityNamedControl -Root $Form -Name 'SqlEditor'
+    if ($state.IsBusy -or ($Mode -eq 'Save' -and [string]::IsNullOrWhiteSpace($editor.Text))) { return }
+    $busyStarted = $false
+    $loaded = $false
+    try {
+        Initialize-SqlUtilityTemplatesForForm -Form $Form
+        $prompt = $state.Services["Prompt${Mode}TemplatePath"]
+        $path = & $prompt $state.TemplateDirectory
+        if ([string]::IsNullOrWhiteSpace([string] $path)) { return }
+        $path = Get-SqlUtilityTemplatePath -Path ([string] $path)
+        $allowOverwrite = $false
+        if ($Mode -eq 'Save') {
+            $allowOverwrite = [System.IO.File]::Exists($path)
+            if ($allowOverwrite -and -not (Confirm-SqlUtilityAction -State $state -Caption 'Save Template' `
+                -Text ("Replace the existing template file?`r`n`r`n{0}" -f $path))) { return }
+        }
+
+        Set-SqlUtilityBusy -Form $Form -Busy $true -Message "$Mode template..."
+        $busyStarted = $true
+        if ($Mode -eq 'Load') {
+            $read = $state.Services['ReadTemplate']
+            $text = & $read $path
+            if (-not [string]::IsNullOrWhiteSpace($editor.Text) -and -not (Confirm-SqlUtilityAction `
+                -State $state -Caption 'Load Template' -Text 'Replace the current query text?')) { return }
+            $editor.Text = [string] $text
+            (Get-SqlUtilityNamedControl -Root $Form -Name 'WorkspaceTabs').SelectedTab = Get-SqlUtilityNamedControl -Root $Form -Name 'QueryTab'
+            $loaded = $true
+        }
+        else {
+            $write = $state.Services['WriteTemplate']
+            $saved = & $write $path ([string] $editor.Text) $allowOverwrite
+            if (-not [string]::IsNullOrWhiteSpace($saved.CleanupWarning)) {
+                Show-SqlUtilityMessage -State $state -Text $saved.CleanupWarning -Caption 'Template Saved' -Icon 'Warning'
+            }
+            else {
+                Show-SqlUtilityMessage -State $state -Text 'Template saved.' -Caption 'Save Template' -Icon 'Information'
+            }
+        }
+    }
+    catch {
+        Show-SqlUtilityMessage -State $state -Caption "$Mode Template" -Icon 'Error' `
+            -Text ("{0} template failed.`r`n`r`n{1}" -f $Mode, $_.Exception.Message)
+    }
+    finally {
+        if ($busyStarted) { Set-SqlUtilityBusy -Form $Form -Busy $false -Message 'Ready.' }
+        if ($loaded) { [void] $editor.Focus() }
+    }
 }
 
 function Update-SqlUtilitySavedConnections {
@@ -621,6 +746,13 @@ function Update-SqlUtilityQueryActionState {
     }
     if ($null -ne $countButton) {
         $countButton.Enabled = $hasFreshResult -and -not $exactCacheKnown
+    }
+    $loadTemplateButton = Get-SqlUtilityNamedControl -Root $Form -Name 'LoadTemplateButton'
+    $saveTemplateButton = Get-SqlUtilityNamedControl -Root $Form -Name 'SaveTemplateButton'
+    $editor = Get-SqlUtilityNamedControl -Root $Form -Name 'SqlEditor'
+    if ($null -ne $loadTemplateButton) { $loadTemplateButton.Enabled = -not $state.IsBusy }
+    if ($null -ne $saveTemplateButton) {
+        $saveTemplateButton.Enabled = -not $state.IsBusy -and $null -ne $editor -and -not [string]::IsNullOrWhiteSpace($editor.Text)
     }
 }
 
@@ -1234,6 +1366,7 @@ function New-SqlUtilityMainForm {
     $state = [pscustomobject][ordered]@{
         Config = $validatedConfig
         ConfigPath = $ConfigPath
+        TemplateDirectory = Join-Path $PSScriptRoot 'Templates'
         Services = $Services
         ActiveServer = ''
         ActiveDatabase = ''
@@ -1521,6 +1654,28 @@ function New-SqlUtilityMainForm {
     $exportButton.UseVisualStyleBackColor = $true
     $queryActionLayout.Controls.Add($exportButton, 6, 0)
 
+    $templateActions = [System.Windows.Forms.FlowLayoutPanel]::new()
+    $templateActions.Name = 'TemplateActionLayout'
+    $templateActions.Dock = [System.Windows.Forms.DockStyle]::Top
+    $templateActions.AutoSize = $true
+    $templateActions.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $templateActions.WrapContents = $false
+    $templateActions.Padding = [System.Windows.Forms.Padding]::new(0, 0, 0, 4)
+    $queryTab.Controls.Add($templateActions)
+    $loadTemplateButton = [System.Windows.Forms.Button]::new()
+    $loadTemplateButton.Name = 'LoadTemplateButton'
+    $loadTemplateButton.Text = 'Load Template...'
+    $loadTemplateButton.AutoSize = $true
+    $loadTemplateButton.Margin = [System.Windows.Forms.Padding]::new(0, 0, 6, 0)
+    $templateActions.Controls.Add($loadTemplateButton)
+    $saveTemplateButton = [System.Windows.Forms.Button]::new()
+    $saveTemplateButton.Name = 'SaveTemplateButton'
+    $saveTemplateButton.Text = 'Save Template...'
+    $saveTemplateButton.AutoSize = $true
+    $saveTemplateButton.Margin = [System.Windows.Forms.Padding]::new(0)
+    $saveTemplateButton.Enabled = $false
+    $templateActions.Controls.Add($saveTemplateButton)
+
     $sqlEditor = [System.Windows.Forms.TextBox]::new()
     $sqlEditor.Name = 'SqlEditor'
     $sqlEditor.Multiline = $true
@@ -1727,6 +1882,8 @@ function New-SqlUtilityMainForm {
     $nextPageButton.Add_Click({ Invoke-SqlUtilityPageAction -Form $form -PageDelta 1 }.GetNewClosure())
     $countButton.Add_Click({ Invoke-SqlUtilityCountAction -Form $form }.GetNewClosure())
     $exportButton.Add_Click({ Invoke-SqlUtilityExportAction -Form $form }.GetNewClosure())
+    $loadTemplateButton.Add_Click({ Invoke-SqlUtilityTemplateAction -Form $form -Mode Load }.GetNewClosure())
+    $saveTemplateButton.Add_Click({ Invoke-SqlUtilityTemplateAction -Form $form -Mode Save }.GetNewClosure())
     $sqlEditor.Add_TextChanged({
         if ($null -ne $form.Tag.ExecutedQuery -and -not $form.Tag.IsQueryStale) {
             $matchesExecutedText = [string]::Equals(
@@ -1736,15 +1893,16 @@ function New-SqlUtilityMainForm {
             )
             if (-not $matchesExecutedText) {
                 $form.Tag.IsQueryStale = $true
-                Update-SqlUtilityQueryActionState -Form $form
             }
         }
+        Update-SqlUtilityQueryActionState -Form $form
     }.GetNewClosure())
 
     Update-SqlUtilitySavedConnections -Form $form
     $serverTextBox.Text = ''
     $databaseTextBox.Text = ''
     Set-SqlUtilityStage -Form $form -Stage 'Connection'
+    Initialize-SqlUtilityTemplatesForForm -Form $form
     return $form
 }
 

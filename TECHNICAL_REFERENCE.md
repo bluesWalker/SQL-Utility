@@ -11,6 +11,7 @@ Version 1 is intentionally small and synchronous. It is designed to be copied in
 - Connection-first startup with blank Server and Database fields.
 - Windows-authenticated connection testing and workspace entry.
 - App-local persistence of successful server/database pairs and global settings.
+- Explicit SQL template file saving/loading in Query, with an application-local default Templates folder.
 - Saved-connection selection and confirmed deletion.
 - Data Explorer, Query, and Settings tabs available after connection.
 - Physical-table discovery, checked output columns, typed `AND` filters, bounded unordered previews, preview-only export, and safe generated-SQL handoff to Query.
@@ -45,6 +46,7 @@ The runtime distribution contains exactly eight files:
 StartSqlUtility.cmd
 SqlUtility.ps1
 SqlUtility.cat
+Templates/  (initially empty)
 modules/
   SqlUtility.Config.ps1
   SqlUtility.QueryPolicy.ps1
@@ -56,6 +58,8 @@ modules/
 Keep this structure intact. `SqlUtility.ps1` validates the seven protected command/script files against the SHA-256 hashes in `SqlUtility.cat`, then loads every module relative to its own directory. The folder can therefore be moved without installation or module registration.
 
 `SqlUtility.config.json` is not part of the distribution. The application creates it beside `SqlUtility.ps1` only when a successful connection or settings change needs to be persisted.
+
+Packages include an empty `Templates/` directory, never personal `.sql` files from the source checkout. Form initialization creates this directory if missing and preserves existing contents. Template files are mutable user data, excluded from Git and the runtime catalog.
 
 ## Running the Application
 
@@ -112,6 +116,7 @@ flowchart LR
     UI --> Database["SqlUtility.Database.ps1"]
     UI --> Excel["SqlUtility.Excel.ps1"]
     Config --> Json["SqlUtility.config.json"]
+    Config --> Templates["User-selected .sql files"]
     Explorer -- "typed preview descriptor and editor SQL" --> UI
     Database <--> SqlServer["SQL Server<br/>Windows integrated authentication"]
     Database -- "neutral catalog, previews, pages, and ordered row stream" --> UI
@@ -123,7 +128,7 @@ flowchart LR
 | --- | --- |
 | `SqlUtility.cat` | Generated version-2 Windows file catalog containing SHA-256 hashes and relative paths for the seven protected runtime command/script files. It excludes mutable configuration and export files. |
 | `SqlUtility.ps1` | Validates the runtime catalog when requested by the launcher, then creates WinForms controls, coordinates connection/Data Explorer/query/count/settings/export workflows, owns application, builder, preview-snapshot, and explicit-count state, binds neutral tables, renders status, paging, and user messages, and caps displayed grid columns at 300 pixels. |
-| `modules/SqlUtility.Config.ps1` | Creates schema 3 defaults, migrates valid schema 1/2 input in memory, validates settings, loads/writes JSON safely, deduplicates saved pairs, and removes saved pairs. |
+| `modules/SqlUtility.Config.ps1` | Creates schema 3 defaults, migrates valid schema 1/2 input in memory, validates settings, loads/writes JSON safely, manages saved pairs, initializes the Templates folder, and reads/writes SQL template text safely. |
 | `modules/SqlUtility.QueryPolicy.ps1` | Validates named sources, approved join chains, normalization, primary-table extraction, and top-level ordering; generates count-source/wrapper SQL. |
 | `modules/SqlUtility.DataExplorer.ps1` | Validates UI-neutral table/column/filter inputs, maps supported SQL types and operators, quotes catalog identifiers, converts typed values, and builds parameterized preview descriptors and safe editable Query SQL. It has no WinForms or database access. |
 | `modules/SqlUtility.Database.ps1` | Builds integrated-security connection strings, tests connections, runs fixed physical-table/column catalog queries, executes typed bounded previews, bounded queries, and scalar counts, constructs neutral results, implements paging, streams ordered exports, enforces command timeouts, and owns SQL resource disposal. |
@@ -182,6 +187,14 @@ The configuration never stores:
 - Active connection selection or last selected saved pair.
 - Export destinations.
 - Window position, size, or other UI state.
+
+## SQL Template Files
+
+The [SQL Template Files design](docs/superpowers/specs/2026-09-16-sql-templates-design.md) owns this persistence extension. Query provides Load Template and Save Template above its editor. Each fresh file dialog starts in `Templates/` beside `SqlUtility.ps1`, permits external directories, and restores the process working directory. Neither paths nor filenames are saved in configuration; schema 3 is unchanged.
+
+Saving retains exact editor text, including whitespace, values, comments, and unfinished placeholders, as UTF-8 with a BOM. Blank saves are disabled. Loading accepts UTF-8 and BOM-marked Unicode, rejects invalid encoding/NUL text, reads fully before confirming editor replacement, and never queries metadata, switches connections, or executes SQL. A changed editor follows the existing stale-result workflow. Cancellation/read failure preserves the previous editor and displayed result. Loaded files are not linked to later editor changes.
+
+The UI owns file selection and overwrite confirmation. The Config module writes a unique temporary sibling, then uses a non-overwriting move for a new destination or replacement with a backup for an approved existing destination. Pre-commit failure preserves the prior file; post-commit cleanup failure returns a warning while reporting the save as successful. Transients use `.SqlUtility.template.<id>.tmp`/`.bak` names only in the destination directory. Failure to create the default folder produces a warning and leaves the application and external file selection available.
 
 ## Data Explorer
 
@@ -353,8 +366,9 @@ Data Explorer **Export Preview** uses the same neutral cached-table exporter and
 - Application-generated paging values are SQL parameters.
 - Data Explorer table and column identifiers come from fixed physical-table catalog queries; preview limits and filter values use explicit typed SQL parameters.
 - Query-tab execution and export use only the normalized snapshot approved by QueryPolicy; Data Explorer preview execution uses only the validated parameterized descriptor built from returned catalog metadata.
-- Query text, results, caches, Data Explorer builder/snapshot state, and the active connection exist only in process memory.
-- Automatic persistent writes are limited to validated `SqlUtility.config.json` plus same-directory safe-write transients.
+- Query text is persisted only through explicit Save Template actions; results, caches, Data Explorer builder/snapshot state, and the active connection exist only in process memory.
+- Automatic persistent writes are limited to validated `SqlUtility.config.json` plus same-directory safe-write transients and creation of the default Templates directory.
+- Template text files and their safe-write transients are written only to the user-selected destination directory.
 - Excel files and their safe-write transients are written only to the user-selected destination directory.
 - The application performs no registry or environment-variable writes.
 - SQL Server connection/query traffic is the application's only automatic network protocol.
@@ -381,6 +395,7 @@ Tests are dependency-free PowerShell scripts and do not require a live SQL Serve
 | --- | --- |
 | `tests/Test-Helpers.ps1` | Shared assertions and test completion behavior. |
 | `tests/Test-Config.ps1` | Defaults, schema 1/2 migration, schema 3 ranges, saved pairs, corruption classification, and safe persistence. |
+| `tests/Test-Templates.ps1` | Folder initialization, SQL/Unicode text round trips, external paths, overwrite permission, failure preservation, and post-commit cleanup warnings. |
 | `tests/Test-QueryPolicy.ps1` | Accepted grammar including JOIN chains, bypass-focused named-source/join rejection, statement boundaries, aliases, comments, and cast syntax. |
 | `tests/Test-DataExplorer.ps1` | Type/operator matrix, typed conversion, identifier/literal safety, parameterized preview descriptors, and QueryPolicy-compatible generated editor SQL. |
 | `tests/Test-Database.ps1` | Integrated connection strings, physical-table/column catalog queries, sequential large-value reads, retained-result and Excel-cell limits, paging, neutral result conversion, timeouts, cancellation, and disposal boundaries. |
@@ -414,6 +429,7 @@ These are external acceptance checks. Local automated tests do not complete them
 - [ ] Verify automatic/refresh physical-table discovery and metadata visibility under the signed-in identity.
 - [ ] Preview representative large, wide, indexed, and unindexed tables and verify bounded rows, unordered labeling, filters, and timeout behavior.
 - [ ] Send representative SQL types and collations to Query and execute the generated SQL.
+- [ ] Save/load SQL templates in Citrix, including Unicode text, overwrite refusal, cloud-drive failures, external directories, and both dialogs returning to Templates after browsing elsewhere.
 - [ ] Load representative schema 1 and schema 2 configurations, then verify schema 3 migration and reload from the application directory/cloud drive after a successful save.
 - [ ] Verify the result data limit against representative `nvarchar(max)` and `varbinary(max)` values: no partial result is displayed, and reducing selected columns or filters allows retry.
 - [ ] Run representative complete unordered, truncated unordered, and ordered `INNER JOIN`, `LEFT JOIN`, and mixed chained-join queries.
@@ -423,7 +439,7 @@ These are external acceptance checks. Local automated tests do not complete them
 - [ ] Export Preview, verify overwrite behavior and the exact bounded snapshot row count, and open the workbook in desktop Excel.
 - [ ] Verify an unsupported `RIGHT JOIN` is rejected before a database call, and a valid-shape query with an unknown or ambiguous column reports a server-side Query Error.
 - [ ] Confirm the header is bold, filtered, and frozen and representative cell types are correct.
-- [ ] Confirm the application creates no files except app-local configuration/transients and explicitly selected Excel output/transients.
+- [ ] Confirm the application creates only the default Templates directory, app-local configuration/transients, and explicitly selected SQL template/Excel files with same-directory transients.
 
 ## Version 1 Limitations
 
@@ -432,7 +448,7 @@ These are external acceptance checks. Local automated tests do not complete them
 - Data Explorer previews are bounded and unordered, and builder changes do not mark the displayed snapshot stale.
 - One result set, one Query tab, one Data Explorer preview snapshot, and one active server/database pair.
 - Synchronous UI with no background runspace, cancellation button, or detailed progress.
-- No query history, saved queries, result persistence, or operational log.
+- No automatic query history, result persistence, or operational log. Templates are plain SQL starting points with manual values and no database binding or synchronization.
 - No automatic total-row or total-page count; **Count** is an explicit point-in-time operation.
 - No SQL authentication or credential storage.
 - One Excel worksheet; results above worksheet limits stop with an error.

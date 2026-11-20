@@ -74,6 +74,11 @@ function New-TestServices {
         CountCalls = [System.Collections.Generic.List[object]]::new()
         ExportCalls = [System.Collections.Generic.List[object]]::new()
         PromptCalls = 0
+        TemplateDirectoryCalls = [System.Collections.Generic.List[string]]::new()
+        TemplatePromptCalls = [System.Collections.Generic.List[object]]::new()
+        TemplateSavePath = $null
+        TemplateLoadPath = $null
+        TemplateDirectoryError = $null
         TableCalls = [System.Collections.Generic.List[object]]::new()
         ColumnCalls = [System.Collections.Generic.List[object]]::new()
         BuildExplorerCalls = [System.Collections.Generic.List[object]]::new()
@@ -122,6 +127,23 @@ function New-TestServices {
     }
 
     $services = @{
+        InitializeTemplateDirectory = {
+            param($Path)
+            [void] $recorder.TemplateDirectoryCalls.Add($Path)
+            if ($recorder.TemplateDirectoryError) { throw $recorder.TemplateDirectoryError }
+        }.GetNewClosure()
+        PromptSaveTemplatePath = {
+            param($Directory)
+            [void] $recorder.TemplatePromptCalls.Add([pscustomobject]@{ Mode='Save'; Directory=$Directory })
+            return $recorder.TemplateSavePath
+        }.GetNewClosure()
+        PromptLoadTemplatePath = {
+            param($Directory)
+            [void] $recorder.TemplatePromptCalls.Add([pscustomobject]@{ Mode='Load'; Directory=$Directory })
+            return $recorder.TemplateLoadPath
+        }.GetNewClosure()
+        ReadTemplate = { param($Path) Read-SqlUtilityTemplate -Path $Path }
+        WriteTemplate = { param($Path,$Text,$AllowOverwrite) Write-SqlUtilityTemplate -Path $Path -Text $Text -AllowOverwrite $AllowOverwrite }
         TestConnection = {
             param($Server, $Database)
             [void] $recorder.TestCalls.Add([pscustomobject]@{ Server = $Server; Database = $Database })
@@ -464,7 +486,7 @@ try {
     Assert-Equal 10 $querySplit.SplitterWidth 'Query splitter provides a remote-friendly drag target'
     Assert-Equal 205 $querySplit.Panel1.Height 'Query editor pane initializes after final layout'
     Assert-Equal 170 $queryEditor.Height 'Query editor uses the approved compact default height'
-    Assert-True ($resultsGrid.Height -ge 314) 'Query output viewer uses at least the approved default height'
+    Assert-True ($resultsGrid.Height -ge 280) 'Query output viewer retains usable default height below the template toolbar'
     Assert-True ($resultsGrid.Height -gt $queryEditor.Height) 'Query output viewer starts taller than the editor'
 
     $workspaceHeader = $activeConnectionLabel.Parent
@@ -1817,8 +1839,8 @@ try {
     $querySplit = Get-TestControl $explorerForm 'QuerySplitContainer'
     Assert-Equal $querySplit.Panel1.Height $rightSplit.Panel1.Height `
         'Data Explorer builder pane matches the Query editor pane by default'
-    Assert-Equal $querySplit.Panel2.Height $rightSplit.Panel2.Height `
-        'Data Explorer preview pane matches the Query output pane by default'
+    Assert-Equal ($querySplit.Panel2.Height + (Get-TestControl $explorerForm 'TemplateActionLayout').Height) $rightSplit.Panel2.Height `
+        'Data Explorer preview keeps its height while Query reserves space for template actions'
     Assert-Equal ([System.Windows.Forms.Orientation]::Vertical) $builderSplit.Orientation `
         'Columns are left of filters'
     Assert-Equal ([System.Windows.Forms.FixedPanel]::None) $mainSplit.FixedPanel `
@@ -2172,5 +2194,136 @@ try {
     Assert-True ([object]::ReferenceEquals($displayed,$failureForm.Tag.DataExplorerPreview)) 'Failed settings save preserves preview snapshot'
 }
 finally { $failureForm.Dispose() }
+
+# Templates use the editor, preserve results, and never perform database work.
+$templateRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('SqlUtility.TemplateUiTest.' + [guid]::NewGuid().ToString('N'))
+[void] [System.IO.Directory]::CreateDirectory($templateRoot)
+$templateHarness = New-TestServices
+$templateForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $templateHarness.Services
+try {
+    Show-TestForm $templateForm
+    Enter-TestWorkspace $templateForm
+    $editor = Get-TestControl $templateForm 'SqlEditor'
+    $load = Get-TestControl $templateForm 'LoadTemplateButton'
+    $save = Get-TestControl $templateForm 'SaveTemplateButton'
+    $defaultTemplates = Join-Path $projectRoot 'Templates'
+    Assert-Equal $defaultTemplates $templateHarness.Recorder.TemplateDirectoryCalls[0] 'Form initializes the application-local folder independently of configuration path'
+    Assert-Equal $false $save.Enabled 'Blank editor disables Save Template'
+    $editor.Text = '   '
+    Assert-Equal $false $save.Enabled 'Whitespace editor disables Save Template'
+    $original = "SELECT Id FROM dbo.Items ORDER BY Id;`r`n-- keep this"
+    $editor.Text = $original
+    Assert-Equal $true $save.Enabled 'Text enables Save Template'
+
+    $templateHarness.Recorder.OrderedResults[1] = New-TestPageResult -Data (New-TestDataTable -RowCount 2) -PageNumber 1 -HasNext $true
+    (Get-TestControl $templateForm 'ExecuteButton').PerformClick()
+    $result = $templateForm.Tag.CurrentResult
+    $validationCount = $templateHarness.Recorder.ValidationCalls.Count
+    $sqlCount = $templateHarness.Recorder.OrderedCalls.Count
+    $load.PerformClick()
+    Assert-Equal $original $editor.Text 'Cancelling file selection preserves editor'
+    Assert-Equal $false $templateForm.Tag.IsQueryStale 'Cancelling preserves fresh result'
+    Assert-Equal 0 $templateHarness.Recorder.ConfirmCalls.Count 'Cancelling selection does not prompt for replacement'
+
+    $source = Join-Path $templateRoot 'external.sql'
+    $loadedText = "-- template`r`nSELECT * FROM dbo.Items WHERE Id = {{Id}};`r`n"
+    [void] (Write-SqlUtilityTemplate -Path $source -Text $loadedText)
+    $templateHarness.Recorder.TemplateLoadPath = $source
+    $templateHarness.Recorder.ConfirmResult = $false
+    $load.PerformClick()
+    Assert-Equal $original $editor.Text 'Refusing replacement preserves editor'
+    Assert-Equal $false $templateForm.Tag.IsQueryStale 'Refusing replacement preserves fresh result'
+    Assert-Equal 1 $templateHarness.Recorder.ConfirmCalls.Count 'Existing editor text requires one confirmation'
+
+    $templateHarness.Recorder.TemplateLoadPath = Join-Path $templateRoot 'missing.sql'
+    $load.PerformClick()
+    Assert-Equal $original $editor.Text 'Failed read preserves editor'
+    Assert-Equal $false $templateForm.Tag.IsQueryStale 'Failed read preserves fresh result'
+    Assert-Equal 1 $templateHarness.Recorder.ConfirmCalls.Count 'Failed read does not ask to replace editor'
+    $templateHarness.Recorder.TemplateLoadPath = $source
+    $templateHarness.Recorder.ConfirmResult = $true
+    $load.PerformClick()
+    Assert-Equal $loadedText $editor.Text 'Confirmed load copies exact template text'
+    Assert-Equal $true $templateForm.Tag.IsQueryStale 'Loading changed text makes the existing result stale'
+    Assert-True ([object]::ReferenceEquals($result,$templateForm.Tag.CurrentResult)) 'Loading preserves the displayed result snapshot'
+    Assert-Equal $false (Get-TestControl $templateForm 'ExportButton').Enabled 'Loaded text disables stale-result export'
+    Assert-Equal $false (Get-TestControl $templateForm 'NextPageButton').Enabled 'Loaded text disables stale-result paging'
+    Assert-Equal 'QueryServer' $templateForm.Tag.ActiveServer 'Loading preserves active server'
+    Assert-Equal 'QueryDatabase' $templateForm.Tag.ActiveDatabase 'Loading preserves active database'
+
+    $confirmCount = $templateHarness.Recorder.ConfirmCalls.Count
+    $editor.Text = ''
+    $load.PerformClick()
+    Assert-Equal $confirmCount $templateHarness.Recorder.ConfirmCalls.Count 'Blank editor loads without overwrite confirmation'
+    $save.PerformClick()
+    Assert-Equal $loadedText $editor.Text 'Cancelling Save preserves editor'
+    Assert-Equal $loadedText (Read-SqlUtilityTemplate -Path $source) 'Loaded template is never autosaved'
+
+    $destination = Join-Path $templateRoot 'saved.sql'
+    $templateHarness.Recorder.TemplateSavePath = $destination
+    $save.PerformClick()
+    Assert-Equal $loadedText (Read-SqlUtilityTemplate -Path $destination) 'Save writes unfinished SQL to an external folder'
+    Assert-Equal $confirmCount $templateHarness.Recorder.ConfirmCalls.Count 'New destination does not ask for overwrite permission'
+    $editor.Text = '-- revised template'
+    $templateHarness.Recorder.ConfirmResult = $false
+    $save.PerformClick()
+    Assert-Equal $loadedText (Read-SqlUtilityTemplate -Path $destination) 'Declined file overwrite preserves existing template'
+    $templateHarness.Recorder.ConfirmResult = $true
+    $save.PerformClick()
+    Assert-Equal '-- revised template' (Read-SqlUtilityTemplate -Path $destination) 'Confirmed file overwrite saves current editor text'
+    $locked = [System.IO.File]::Open($destination, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try { $editor.Text = '-- pending revision'; $save.PerformClick() }
+    finally { $locked.Dispose() }
+    Assert-Equal '-- pending revision' $editor.Text 'Failed save preserves unsaved editor text'
+    Assert-Equal '-- revised template' (Read-SqlUtilityTemplate -Path $destination) 'Failed save preserves previous file'
+    Assert-Equal $false $templateForm.Tag.IsBusy 'Template failure restores busy state'
+
+    $templateHarness.Recorder.TemplateDirectoryError = 'default folder is read-only'
+    $templateHarness.Recorder.TemplateLoadPath = $source
+    $load.PerformClick()
+    Assert-Equal $loadedText $editor.Text 'Unavailable default folder still allows loading another location'
+    $templateHarness.Recorder.TemplateDirectoryError = $null
+    foreach ($call in $templateHarness.Recorder.TemplatePromptCalls) {
+        Assert-Equal $defaultTemplates $call.Directory 'Every Save and Load starts in application-local Templates after external browsing'
+    }
+    Assert-Equal $validationCount $templateHarness.Recorder.ValidationCalls.Count 'Template actions never validate SQL'
+    Assert-Equal $sqlCount $templateHarness.Recorder.OrderedCalls.Count 'Template actions never execute SQL'
+    Assert-Equal 0 $templateHarness.Recorder.TableCalls.Count 'Template actions never query database metadata'
+    Assert-Equal 0 $templateHarness.Recorder.WriteCalls.Count 'Template actions never persist configuration'
+
+    Set-SqlUtilityBusy -Form $templateForm -Busy $true -Message 'Testing'
+    Assert-Equal $false $load.Enabled 'Busy state disables Load Template'
+    Assert-Equal $false $save.Enabled 'Busy state disables Save Template'
+    Set-SqlUtilityBusy -Form $templateForm -Busy $false -Message 'Ready.'
+    foreach ($size in @([System.Drawing.Size]::new(960,680), $templateForm.MinimumSize)) {
+        $templateForm.Size = $size
+        [System.Windows.Forms.Application]::DoEvents()
+        Assert-TestControlContained $load 'Load button fits at default and minimum window sizes'
+        Assert-TestControlContained $save 'Save button fits at default and minimum window sizes'
+        Assert-True ($load.Right -le $save.Left) 'Template buttons do not overlap'
+        $editorBounds = $editor.RectangleToScreen($editor.ClientRectangle)
+        $templateBounds = $load.Parent.RectangleToScreen($load.Parent.ClientRectangle)
+        Assert-True ($editorBounds.Top -ge $templateBounds.Bottom) 'Template actions do not cover the SQL editor'
+    }
+    foreach ($mode in @('Save','Load')) {
+        $dialog = New-SqlUtilityTemplateFileDialog -Mode $mode -InitialDirectory $defaultTemplates
+        try {
+            Assert-Equal $defaultTemplates $dialog.InitialDirectory 'Native dialog receives fixed Templates directory'
+            Assert-Equal 'sql' $dialog.DefaultExt 'Native dialog defaults to SQL files'
+            Assert-Equal $true $dialog.RestoreDirectory 'Native dialog preserves process working directory'
+            Assert-Equal '' $dialog.FileName 'Native dialog starts without the previous filename'
+        }
+        finally { $dialog.Dispose() }
+    }
+}
+finally {
+    $templateForm.Dispose()
+    $resolvedRoot = [System.IO.Path]::GetFullPath($templateRoot)
+    $tempPrefix = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if ($resolvedRoot.StartsWith($tempPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $resolvedRoot) -like 'SqlUtility.TemplateUiTest.*') {
+        Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
+    }
+}
 
 Complete-TestFile 'All SQL Utility UI tests passed.'

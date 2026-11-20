@@ -4,6 +4,8 @@
 
 ## Purpose
 
+The approved [SQL Template Files design](2026-09-16-sql-templates-design.md) extends the historical no-query-persistence baseline with explicit `.sql` text saving/loading and an initially empty application-local Templates directory. The historical exclusions below do not override that extension.
+
 Evolve the proven SQL connection POC into a portable internal Windows GUI for managing Windows-authenticated SQL Server connections, running restricted read-only queries, paging results, and exporting complete results to formatted Excel workbooks.
 
 Version 1 remains a folder-based application launched through a command file. It requires no installation, administrator access, third-party modules, Microsoft Excel installation, or executable compilation.

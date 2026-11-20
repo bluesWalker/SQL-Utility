@@ -102,6 +102,8 @@ try {
     }
 
     [void] [System.IO.Directory]::CreateDirectory($stagingRoot)
+    # Ship an empty user-data folder, never the developer's personal templates.
+    [void] [System.IO.Directory]::CreateDirectory((Join-Path $stagingRoot 'Templates'))
     foreach ($relativePath in $relativeRuntimePaths) {
         $sourcePath = Join-Path $projectRoot $relativePath
         $stagingPath = Join-Path $stagingRoot $relativePath

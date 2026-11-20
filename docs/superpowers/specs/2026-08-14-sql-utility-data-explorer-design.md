@@ -90,7 +90,7 @@ Export Preview always exports the preview snapshot currently shown, even when th
 
 Change Connection clears the table catalog, builder state, preview snapshot, and Data Explorer control state along with the existing transient Query-tab state.
 
-No Data Explorer table choice, metadata, output selection, filter, SQL, or preview data is persisted.
+No Data Explorer builder or preview state is persisted. After Send to Query, users can explicitly save the resulting editor text under the [SQL Template Files design](2026-09-16-sql-templates-design.md); loading a file does not restore Data Explorer controls.
 
 ## Columns and Filters
 
@@ -189,7 +189,7 @@ Configuration schema version 3 adds the shared retained-result data limit to the
 
 Reading schema version 1 supplies `previewRowLimit = 100` and `resultDataLimitMiB = 256`; reading schema version 2 preserves `previewRowLimit` and supplies `resultDataLimitMiB = 256`. Both migrate in memory without creating or rewriting the file. A later successful connection or settings save persists the complete version 3 object through the existing safe-write path. Schema versions greater than 3 remain unsupported; malformed version 3 data remains corruption rather than being silently repaired.
 
-All config-copying and saved-connection operations preserve `previewRowLimit` and `resultDataLimitMiB`. Safe replacement, cleanup-error handling, environmental-read failure behavior, and the restriction against persisted query/editor/result state remain unchanged.
+All config-copying and saved-connection operations preserve `previewRowLimit` and `resultDataLimitMiB`. Safe replacement, cleanup-error handling, environmental-read failure behavior, and the restriction against query/editor/result state in configuration remain unchanged. Explicit SQL template files are a separate persistence extension.
 
 ## Architecture and Runtime Distribution
 

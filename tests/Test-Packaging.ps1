@@ -99,6 +99,10 @@ try {
         [void] [System.IO.Directory]::CreateDirectory((Split-Path -Parent $fixtureScriptPath))
         Copy-Item -LiteralPath $packageScript -Destination $fixtureScriptPath
 
+        $personalTemplates = Join-Path $fixtureRoot 'Templates'
+        [void] [System.IO.Directory]::CreateDirectory($personalTemplates)
+        [System.IO.File]::WriteAllText((Join-Path $personalTemplates 'private.sql'), 'SELECT private FROM dbo.Items')
+
         $packagePath = Join-Path $packageOutputFolder 'SQL-Utility-test.zip'
         & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
             -File $fixtureScriptPath -DestinationPath $packagePath
@@ -121,6 +125,12 @@ try {
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [System.IO.Compression.ZipFile]::ExtractToDirectory($packagePath, $extractedFolder)
+        $extractedTemplates = Join-Path $extractedFolder 'Templates'
+        Assert-True ([System.IO.Directory]::Exists($extractedTemplates)) 'Package includes a Templates folder'
+        if ([System.IO.Directory]::Exists($extractedTemplates)) {
+            Assert-Equal 0 @(Get-ChildItem -LiteralPath $extractedTemplates -Force).Count 'Packaged Templates folder is empty'
+        }
+        Assert-True ([System.IO.File]::Exists((Join-Path $personalTemplates 'private.sql'))) 'Packaging preserves source personal templates'
         $expectedEntries = @($protectedRuntimeFiles + 'SqlUtility.cat') |
             ForEach-Object { $_ -replace '\\', '/' } |
             Sort-Object

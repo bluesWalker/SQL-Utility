@@ -775,6 +775,22 @@ function Get-SqlUtilityDataExplorerTableListDisplayName {
     return ('{0}.{1}' -f [string] $Table.SchemaName, [string] $Table.TableName)
 }
 
+function Set-SqlUtilityDataExplorerTableListDisplayNames {
+    param($Tables)
+
+    foreach ($table in @($Tables)) {
+        $listDisplayName = Get-SqlUtilityDataExplorerTableListDisplayName -Table $table
+        $property = $table.PSObject.Properties['ListDisplayName']
+        if ($null -eq $property) {
+            $table.PSObject.Properties.Add(
+                [System.Management.Automation.PSNoteProperty]::new('ListDisplayName', $listDisplayName))
+        }
+        else {
+            $property.Value = $listDisplayName
+        }
+    }
+}
+
 function Update-SqlUtilityDataExplorerTableList {
     param([System.Windows.Forms.Form]$Form)
 
@@ -783,20 +799,31 @@ function Update-SqlUtilityDataExplorerTableList {
     $filter = (Get-SqlUtilityNamedControl $Form 'TableFilterTextBox').Text
     $selectedObjectId = if ($state.DataExplorerBuilder.Table) { [int] $state.DataExplorerBuilder.Table.ObjectId } else { -1 }
 
-    $list.DisplayMember = 'ListDisplayName'
-    $list.Items.Clear()
+    $matched = [System.Collections.ArrayList]::new()
+    $selectedIndex = -1
     foreach ($table in @($state.DataExplorerTables)) {
-        $listDisplayName = Get-SqlUtilityDataExplorerTableListDisplayName -Table $table
-        $table | Add-Member -NotePropertyName 'ListDisplayName' -NotePropertyValue $listDisplayName -Force
-        if (-not $filter -or $listDisplayName.IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-            [void] $list.Items.Add($table)
+        if ($filter -and ([string] $table.ListDisplayName).IndexOf($filter, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            continue
+        }
+        if ($selectedIndex -lt 0 -and [int] $table.ObjectId -eq $selectedObjectId) {
+            $selectedIndex = $matched.Count
+        }
+        [void] $matched.Add($table)
+    }
+
+    $list.BeginUpdate()
+    try {
+        $list.DisplayMember = 'ListDisplayName'
+        $list.Items.Clear()
+        if ($matched.Count) {
+            $list.Items.AddRange([object[]] $matched.ToArray())
         }
     }
-    for ($index = 0; $index -lt $list.Items.Count; $index++) {
-        if ([int] $list.Items[$index].ObjectId -eq $selectedObjectId) {
-            $list.SelectedIndex = $index
-            break
-        }
+    finally {
+        $list.EndUpdate()
+    }
+    if ($selectedIndex -ge 0) {
+        $list.SelectedIndex = $selectedIndex
     }
 }
 
@@ -1020,7 +1047,7 @@ function Invoke-SqlUtilityDataExplorerSendToQuery {
 
 function Invoke-SqlUtilityLoadDataExplorerTables {
     param([System.Windows.Forms.Form]$Form)
-    $s=$Form.Tag;if($s.IsBusy){return};Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;Set-SqlUtilityBusy $Form $true 'Loading tables...';try{$fn=$s.Services.ListPhysicalTables;$tables=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.Config.queryExportTimeoutSeconds);$old=$s.DataExplorerBuilder.Table;$s.DataExplorerTables=$tables;$s.DataExplorerTablesLoaded=$true;if($old){$m=@($tables|?{[int]$_.ObjectId-eq[int]$old.ObjectId});$s.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$(if($m.Count){$m[0]}else{$null});Columns=@();SelectedColumnNames=@();Filters=@()}};(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items.Clear();Clear-SqlUtilityDataExplorerFilterRows $Form;(Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=($null-ne$s.DataExplorerBuilder.Table);Update-SqlUtilityDataExplorerTableList $Form}catch{Show-SqlUtilityMessage $s ("Tables could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
+    $s=$Form.Tag;if($s.IsBusy){return};Reset-SqlUtilityDataExplorerOutputColumnNavigation $Form;Set-SqlUtilityBusy $Form $true 'Loading tables...';try{$fn=$s.Services.ListPhysicalTables;$tables=@(& $fn $s.ActiveServer $s.ActiveDatabase $s.Config.queryExportTimeoutSeconds);Set-SqlUtilityDataExplorerTableListDisplayNames -Tables $tables;$old=$s.DataExplorerBuilder.Table;$s.DataExplorerTables=$tables;$s.DataExplorerTablesLoaded=$true;if($old){$m=@($tables|?{[int]$_.ObjectId-eq[int]$old.ObjectId});$s.DataExplorerBuilder=[pscustomobject][ordered]@{Table=$(if($m.Count){$m[0]}else{$null});Columns=@();SelectedColumnNames=@();Filters=@()}};(Get-SqlUtilityNamedControl $Form 'OutputColumnsList').Items.Clear();Clear-SqlUtilityDataExplorerFilterRows $Form;(Get-SqlUtilityNamedControl $Form 'PreviewButton').Enabled=($null-ne$s.DataExplorerBuilder.Table);Update-SqlUtilityDataExplorerTableList $Form}catch{Show-SqlUtilityMessage $s ("Tables could not be loaded.`r`n`r`n$($_.Exception.Message)") 'Data Explorer' 'Error'}finally{Set-SqlUtilityBusy $Form $false 'Ready.';Update-SqlUtilityDataExplorerSendState $Form}
 }
 
 function Invoke-SqlUtilityDataExplorerPreview {

@@ -1952,6 +1952,15 @@ try {
     Assert-Equal $columnCallsBeforeTableFilter $explorerHarness.Recorder.ColumnCalls.Count 'Matching table filter performs no metadata query'
     Assert-True ([object]::ReferenceEquals($filterPreservedSnapshot,$explorerForm.Tag.DataExplorerPreview)) 'Matching table filter preserves preview snapshot state'
     Assert-True ([object]::ReferenceEquals($filterPreservedGrid,(Get-TestControl $explorerForm 'PreviewGrid').DataSource)) 'Matching table filter preserves displayed preview data'
+    Assert-Equal 2 $tableList.Items.Count 'Matching table filter narrows the displayed list'
+    Assert-Equal 1 $tableList.SelectedItem.ObjectId 'Matching table filter restores the list selection'
+    Assert-Equal 'Orders' ($tableList.GetItemText($tableList.SelectedItem)) 'Restored selection keeps its simplified display name'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'Percent'
+    Assert-Equal 1 $tableList.Items.Count 'Excluding table filter narrows the displayed list'
+    Assert-Equal -1 $tableList.SelectedIndex 'Table filter excluding the selected table clears the list selection'
+    Assert-Equal 1 $explorerForm.Tag.DataExplorerBuilder.Table.ObjectId 'Excluding table filter preserves the builder table'
+    (Get-TestControl $explorerForm 'TableFilterTextBox').Text = 'order'
+    Assert-Equal 1 $tableList.SelectedItem.ObjectId 'Re-including table filter restores the list selection'
     (Get-TestControl $explorerForm 'TableFilterTextBox').Text = ''
 
     $priorPreviewCalls = $explorerHarness.Recorder.PreviewCalls.Count
@@ -2147,6 +2156,35 @@ try {
     Assert-Equal 2 $catalogRetryHarness.Recorder.TableCalls.Count 'Catalog retry makes a second call'
 }
 finally { $catalogRetryForm.Dispose() }
+
+# Refreshing the catalog recomputes cached list display names.
+$catalogRenameHarness = New-TestServices
+$catalogRenameForm = New-SqlUtilityMainForm -Config (New-TestConfig) -ConfigPath 'C:\test\config.json' -Services $catalogRenameHarness.Services
+try {
+    Show-TestForm $catalogRenameForm; Enter-TestWorkspace $catalogRenameForm
+    (Get-TestControl $catalogRenameForm 'WorkspaceTabs').SelectedTab = Get-TestControl $catalogRenameForm 'DataExplorerTab'
+    [System.Windows.Forms.Application]::DoEvents()
+    $renameList = Get-TestControl $catalogRenameForm 'PhysicalTablesList'
+    Assert-Equal 'Orders,sales.OrderHistory,Percent%_Star*' `
+        (@($renameList.Items | ForEach-Object { $renameList.GetItemText($_) }) -join ',') `
+        'Initial catalog displays simplified names'
+    $catalogRenameHarness.Recorder.TablesResult = @(
+        [pscustomobject]@{ ObjectId=4; SchemaName='dbo'; TableName='Invoices'; DisplayName='[dbo].[Invoices]' },
+        [pscustomobject]@{ ObjectId=5; SchemaName='finance'; TableName='Ledger'; DisplayName='[finance].[Ledger]' }
+    )
+    (Get-TestControl $catalogRenameForm 'RefreshTablesButton').PerformClick()
+    Assert-Equal 'Invoices,finance.Ledger' `
+        (@($renameList.Items | ForEach-Object { $renameList.GetItemText($_) }) -join ',') `
+        'Refreshed catalog recomputes list display names'
+    (Get-TestControl $catalogRenameForm 'TableFilterTextBox').Text = 'finance.'
+    Assert-Equal 1 $renameList.Items.Count 'Filter matches a refreshed non-dbo display name'
+    Assert-Equal 'finance.Ledger' ($renameList.GetItemText($renameList.Items[0])) 'Filtered refreshed item keeps its display name'
+    (Get-TestControl $catalogRenameForm 'TableFilterTextBox').Text = 'dbo'
+    Assert-Equal 0 $renameList.Items.Count 'Refreshed catalog still hides the dbo schema text'
+    (Get-TestControl $catalogRenameForm 'TableFilterTextBox').Text = ''
+    Assert-Equal 2 $renameList.Items.Count 'Cleared filter restores the refreshed catalog'
+}
+finally { $catalogRenameForm.Dispose() }
 
 # Preview failures preserve the last successful display; row failure retains newly loaded metadata.
 $failureHarness = New-TestServices
